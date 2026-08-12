@@ -118,6 +118,23 @@ function computeDays(records, uid) {
   return days;
 }
 
+// Un fichaje es "a mano" si el admin lo añadió o corrigió (no salió del kiosco).
+const isManual = p => p.origen !== 'fichaje';
+const fmtMark = p => hhmm(p.ts) + (isManual(p) ? '*' : '');
+function dayCols(d) {
+  return {
+    ent: d.list.filter(p => p.tipo === 'entrada').map(fmtMark).join(' / '),
+    sal: d.list.filter(p => p.tipo === 'salida').map(fmtMark).join(' / '),
+    manual: d.list.some(isManual)
+  };
+}
+function describeCorr(c) {
+  if (c.op === 'agregar') return `Añadió ${c.tipoCorregido} a las ${hhmm(c.tsCorregido)}`;
+  if (c.op === 'anular') return `Anuló el fichaje #${c.targetSeq}`;
+  if (c.op === 'modificar') return `Cambió la hora del #${c.targetSeq} a las ${hhmm(c.tsCorregido)}`;
+  return c.op;
+}
+
 function thisWeek() { const d = new Date(); const off = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - off); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return [iso(mon), iso(sun)]; }
 function thisMonth() { const d = new Date(); return [iso(new Date(d.getFullYear(), d.getMonth(), 1)), iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; }
 
@@ -234,7 +251,7 @@ async function panelAlta() {
     <p>2. Nombre del trabajador:</p>
     <input id="altaNombre" placeholder="Nombre">
     <p>3. Foto (cámara o galería):</p>
-    <input id="altaFoto" type="file" accept="image/*" capture="environment">
+    <input id="altaFoto" type="file" accept="image/*">
     <img id="altaPrev" class="prev hidden">
     <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button></div>
     <div id="altaMsg" class="msg"></div>
@@ -322,15 +339,16 @@ async function renderHoursTable(container, from, to, onlyUid) {
   for (const w of workers) {
     const days = computeDays(recs, w.uid).filter(d => (!from || d.date >= from) && (!to || d.date <= to));
     let tot = 0;
-    html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>Fecha</th><th>Marcas</th><th>Horas</th></tr>`;
-    if (!days.length) html += '<tr><td colspan="3" class="muted">Sin fichajes en el periodo</td></tr>';
+    html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th></tr>`;
+    if (!days.length) html += '<tr><td colspan="4" class="muted">Sin fichajes en el periodo</td></tr>';
     for (const d of days) {
       tot += d.worked;
-      const marcas = d.list.map(p => `${p.tipo === 'entrada' ? 'E' : 'S'} ${hhmm(p.ts)}`).join(' · ');
-      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${marcas}</td><td>${d.incompleto ? '⚠ ' : ''}${fmtH(d.worked)}</td></tr>`;
+      const c = dayCols(d);
+      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td>${d.incompleto ? '⚠ ' : ''}${fmtH(d.worked)}</td></tr>`;
     }
-    html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
+    html += `<tr class="tot"><td colspan="3">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
   }
+  html += '<p class="leyenda">⚠ = día incompleto (falta entrada o salida) &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador</p>';
   container.innerHTML = html || '<p class="muted">No hay trabajadores.</p>';
 }
 async function panelHoras() {
@@ -375,44 +393,78 @@ async function exportCSV() {
   const workers = await getAllWorkers();
   const nombre = uid => (workers.find(w => w.uid === uid) || {}).nombre || uid;
   const L = [];
-  L.push('FICHAJES Y CORRECCIONES (registro inalterable, encadenado por hash)');
-  L.push(csvRow(['seq', 'tipo_registro', 'uid', 'nombre', 'tipo', 'fecha', 'hora', 'op', 'target_seq', 'motivo', 'hash', 'prev_hash']));
-  for (const r of recs) {
-    if (r.type === 'fichaje')
-      L.push(csvRow([r.seq, 'fichaje', r.uid, nombre(r.uid), r.tipo, dayKey(r.ts), hhmm(r.ts), '', '', '', r.hash, r.prevHash]));
-    else {
-      const ts = r.tsCorregido != null ? r.tsCorregido : r.ts;
-      L.push(csvRow([r.seq, 'correccion', r.uid, nombre(r.uid), r.tipoCorregido || '', dayKey(ts), hhmm(ts), r.op, r.targetSeq || '', r.motivo, r.hash, r.prevHash]));
-    }
-  }
-  L.push('', 'LOG DE AUDITORÍA (solo correcciones)');
-  L.push(csvRow(['seq', 'fecha_correccion', 'hora_correccion', 'uid', 'nombre', 'op', 'target_seq', 'tipo', 'motivo']));
-  for (const r of recs) if (r.type === 'correccion')
-    L.push(csvRow([r.seq, dayKey(r.ts), hhmm(r.ts), r.uid, nombre(r.uid), r.op, r.targetSeq || '', r.tipoCorregido || '', r.motivo]));
-  L.push('', 'RESUMEN DE HORAS POR TRABAJADOR Y DÍA');
-  L.push(csvRow(['trabajador', 'fecha', 'horas', 'estado']));
+  L.push('REGISTRO DE JORNADA - VIVERO (art. 34.9 del Estatuto de los Trabajadores)');
+  L.push('Generado;' + new Date().toLocaleString('es-ES'));
+  L.push('Nota;Un * detras de una hora significa que la puso el administrador a mano');
+
+  L.push('', '=== RESUMEN DE HORAS ===');
+  L.push(csvRow(['Trabajador', 'Fecha', 'Entrada', 'Salida', 'Horas', 'Estado']));
   for (const w of workers) {
     let tot = 0;
-    for (const d of computeDays(recs, w.uid)) { tot += d.worked; L.push(csvRow([w.nombre, d.date, numES(d.worked), d.incompleto ? 'INCOMPLETO' : 'ok'])); }
-    L.push(csvRow([w.nombre, 'TOTAL', numES(tot), '']));
+    for (const d of computeDays(recs, w.uid)) {
+      tot += d.worked;
+      const c = dayCols(d);
+      L.push(csvRow([w.nombre, d.date, c.ent, c.sal, numES(d.worked), d.incompleto ? 'INCOMPLETO' : 'OK']));
+    }
+    L.push(csvRow([w.nombre, '', '', 'TOTAL', numES(tot), '']));
+    L.push('');
   }
+
+  L.push('=== DETALLE DE FICHAJES (registro inalterable, encadenado por hash) ===');
+  L.push(csvRow(['Seq', 'Tipo registro', 'Trabajador', 'Marca', 'Fecha', 'Hora', 'Origen', 'Motivo', 'Hash', 'Hash anterior']));
+  for (const r of recs) {
+    if (r.type === 'fichaje')
+      L.push(csvRow([r.seq, 'fichaje', nombre(r.uid), r.tipo, dayKey(r.ts), hhmm(r.ts), 'kiosco', '', r.hash, r.prevHash]));
+    else {
+      const ts = r.tsCorregido != null ? r.tsCorregido : r.ts;
+      L.push(csvRow([r.seq, 'corrección', nombre(r.uid), r.tipoCorregido || '', dayKey(ts), hhmm(ts), 'admin', r.motivo, r.hash, r.prevHash]));
+    }
+  }
+
+  L.push('', '=== CORRECCIONES DEL ADMINISTRADOR (log de auditoría) ===');
+  L.push(csvRow(['Seq', 'Fecha corrección', 'Hora', 'Trabajador', 'Acción', 'Motivo']));
+  const corr = recs.filter(r => r.type === 'correccion');
+  if (!corr.length) L.push('(ninguna)');
+  for (const r of corr)
+    L.push(csvRow([r.seq, dayKey(r.ts), hhmm(r.ts), nombre(r.uid), describeCorr(r), r.motivo]));
+
   download(`fichajes_${dayKey(Date.now())}.csv`, 'text/csv;charset=utf-8', '﻿' + L.join('\r\n'));
 }
 
 async function exportPDF() {
   const recs = await getAllRecords();
   const workers = await getAllWorkers();
-  let html = `<h1>Resumen de horas · Vivero</h1><p>Generado: ${new Date().toLocaleString('es-ES')}</p>`;
+  const nombre = uid => (workers.find(w => w.uid === uid) || {}).nombre || uid;
+  let html = `
+    <div class="pdf-head">
+      <h1>Registro de jornada · Vivero</h1>
+      <p>Control horario — art. 34.9 del Estatuto de los Trabajadores<br>
+      Generado el ${new Date().toLocaleString('es-ES')}</p>
+    </div>`;
   for (const w of workers) {
-    let tot = 0;
-    html += `<h2>${w.nombre}</h2><table><tr><th>Fecha</th><th>Marcas</th><th>Horas</th><th>Estado</th></tr>`;
+    let tot = 0, incompletos = 0, rows = '';
     for (const d of computeDays(recs, w.uid)) {
-      tot += d.worked;
-      const marcas = d.list.map(p => `${p.tipo === 'entrada' ? 'E' : 'S'} ${hhmm(p.ts)}`).join(' · ');
-      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${marcas}</td><td>${fmtH(d.worked)}</td><td>${d.incompleto ? 'INCOMPLETO' : 'ok'}</td></tr>`;
+      tot += d.worked; if (d.incompleto) incompletos++;
+      const c = dayCols(d);
+      rows += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td class="num">${fmtH(d.worked)}</td><td>${d.incompleto ? '⚠ Incompleto' : 'OK'}</td></tr>`;
     }
-    html += `<tr><td colspan="2"><b>TOTAL</b></td><td><b>${fmtH(tot)}</b></td><td></td></tr></table>`;
+    if (!rows) rows = '<tr><td colspan="5" class="muted">Sin fichajes</td></tr>';
+    html += `
+      <h2>${w.nombre}</h2>
+      <table>
+        <thead><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estado</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr class="tot"><td colspan="3">TOTAL${incompletos ? ` · ${incompletos} día(s) incompleto(s)` : ''}</td><td class="num">${fmtH(tot)}</td><td></td></tr></tfoot>
+      </table>`;
   }
+  const corr = recs.filter(r => r.type === 'correccion');
+  if (corr.length) {
+    html += '<h2>Correcciones del administrador</h2><table><thead><tr><th>Fecha</th><th>Trabajador</th><th>Acción</th><th>Motivo</th></tr></thead><tbody>';
+    for (const r of corr)
+      html += `<tr><td>${dayKey(r.ts)} ${hhmm(r.ts)}</td><td>${nombre(r.uid)}</td><td>${describeCorr(r)}</td><td>${r.motivo}</td></tr>`;
+    html += '</tbody></table>';
+  }
+  html += '<p class="legend"><b>⚠</b> día incompleto: falta una entrada o una salida. &nbsp; <b>*</b> hora introducida o corregida por el administrador (ver detalle arriba).</p>';
   $('#printArea').innerHTML = html;
   window.print();
 }

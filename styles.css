@@ -52,15 +52,27 @@ tr.tot{font-weight:800;background:#eef}
 .prow{padding:8px;border-radius:8px;margin:6px 0}
 .prow.entrada{background:#d7f0dd}
 .prow.salida{background:#ffe6cc}
+.leyenda{font-size:13px;color:#555;margin-top:12px}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#000c;color:#fff;padding:10px 16px;border-radius:20px;opacity:0;transition:.2s;z-index:50}
 #toast.show{opacity:1}
 #printArea{display:none}
 
 @media print{
   body *{visibility:hidden}
-  #printArea,#printArea *{visibility:visible}
-  #printArea{display:block;position:absolute;left:0;top:0;color:#000;padding:10px}
-  #printArea table{border-collapse:collapse;width:100%;margin-bottom:14px}
-  #printArea th,#printArea td{border:1px solid #333;padding:4px;font-size:12px;text-align:left}
-  #printArea tr.inc{background:#ffc9c9!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #printArea,#printArea *{visibility:visible;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #printArea{display:block;position:absolute;left:0;top:0;width:100%;color:#111;padding:0 4px;font-family:system-ui,Arial,sans-serif}
+  #printArea .pdf-head{border-bottom:3px solid #1b8a3a;padding-bottom:8px;margin-bottom:14px}
+  #printArea h1{font-size:20px;margin:0 0 2px}
+  #printArea .pdf-head p{font-size:11px;color:#555;margin:2px 0}
+  #printArea h2{font-size:15px;margin:16px 0 4px;color:#0b5e2a;page-break-after:avoid}
+  #printArea table{border-collapse:collapse;width:100%;margin-bottom:6px;font-size:12px}
+  #printArea tr{page-break-inside:avoid}
+  #printArea th{background:#1b8a3a;color:#fff;padding:5px 6px;text-align:left}
+  #printArea td{border:1px solid #cfd8cf;padding:4px 6px}
+  #printArea tbody tr:nth-child(even) td{background:#f3f8f3}
+  #printArea td.num{text-align:right;font-variant-numeric:tabular-nums}
+  #printArea tr.inc td{background:#ffe0e0}
+  #printArea tr.tot td{background:#e8f0ff;font-weight:800}
+  #printArea .muted{color:#777}
+  #printArea .legend{font-size:11px;color:#555;margin-top:10px}
 }
