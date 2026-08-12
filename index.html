@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Fichaje Vivero</title>
+<meta name="theme-color" content="#1b8a3a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===== KIOSCO (pantalla del trabajador) ===== -->
+<section id="kiosk" class="screen active">
+  <button id="gear" title="Administrador">&#9881;</button>
+  <div id="rest">
+    <div class="rest-emoji">&#127793;</div>
+    <div class="rest-text">Acerca tu tarjeta</div>
+    <div id="tapHint" class="hidden">Toca la pantalla para activar</div>
+    <div id="nfcWarn" class="hidden">Este navegador no soporta NFC.<br>Usa Chrome en Android.</div>
+  </div>
+  <div id="result" class="hidden">
+    <img id="rPhoto" alt="">
+    <div id="rName"></div>
+    <div id="rMsg"></div>
+    <div id="rTime"></div>
+  </div>
+</section>
+
+<!-- ===== LOGIN PIN ===== -->
+<section id="adminLogin" class="screen">
+  <h2 id="pinLabel">Introduce el PIN</h2>
+  <div id="pinDots"></div>
+  <div class="pinpad">
+    <button data-d="1">1</button><button data-d="2">2</button><button data-d="3">3</button>
+    <button data-d="4">4</button><button data-d="5">5</button><button data-d="6">6</button>
+    <button data-d="7">7</button><button data-d="8">8</button><button data-d="9">9</button>
+    <button id="pinCancel">&#10005;</button><button data-d="0">0</button><button id="pinDel">&#9003;</button>
+    <button id="pinOk" class="wide">Entrar</button>
+  </div>
+</section>
+
+<!-- ===== ADMIN ===== -->
+<section id="admin" class="screen">
+  <div id="adminNav">
+    <button id="navAlta">&#10133; Alta tarjeta</button>
+    <button id="navCorr">&#9998; Corrección</button>
+    <button id="navHoras">&#9201; Horas</button>
+    <button id="navConsulta">&#128269; Consulta</button>
+    <button id="navExport">&#11015; Exportar</button>
+    <button id="navInteg">&#128274; Integridad</button>
+    <button id="navPin">&#128273; PIN</button>
+    <button id="navSalir">&#8592; Salir</button>
+  </div>
+  <div id="adminBody"></div>
+</section>
+
+<div id="toast"></div>
+<div id="printArea"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

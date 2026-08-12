@@ -1,0 +1,502 @@
+'use strict';
+/* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
+
+/* ============================ IndexedDB ============================ */
+const dbp = new Promise((res, rej) => {
+  const r = indexedDB.open('fichaje_vivero', 1);
+  r.onupgradeneeded = () => {
+    const d = r.result;
+    d.createObjectStore('workers', { keyPath: 'uid' });   // {uid, nombre, foto, alta_ts}
+    d.createObjectStore('records', { keyPath: 'seq' });    // cadena append-only (fichajes + correcciones)
+    d.createObjectStore('meta', { keyPath: 'id' });        // {id:'chain',...} , {id:'pin',hash}
+  };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+let db;
+
+const idbReq = req => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+const metaGet = id => idbReq(db.transaction('meta').objectStore('meta').get(id));
+const metaPut = v => idbReq(db.transaction('meta', 'readwrite').objectStore('meta').put(v));
+const getAllRecords = () => idbReq(db.transaction('records').objectStore('records').getAll());
+const getAllWorkers = () => idbReq(db.transaction('workers').objectStore('workers').getAll());
+const getWorker = uid => idbReq(db.transaction('workers').objectStore('workers').get(uid));
+const putWorker = w => idbReq(db.transaction('workers', 'readwrite').objectStore('workers').put(w));
+
+/* ==================== Cadena con hash (inalterabilidad) ==================== */
+async function sha256hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// Serialización estable (claves ordenadas) para que el hash sea reproducible.
+function canonical(o) { return JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]])); }
+
+async function buildRecord(fields, prevHash, seq) {
+  const content = { ...fields, seq, prevHash };
+  const hash = await sha256hex(canonical(content));
+  return { ...content, hash };
+}
+
+// Append-only: nunca se edita ni se borra. Un candado en memoria serializa las escrituras.
+// ponytail: candado global; el kiosco tiene un solo lector NFC, no hay concurrencia real.
+let appendLock = Promise.resolve();
+function appendRecord(fields) {
+  appendLock = appendLock.then(() => doAppend(fields), () => doAppend(fields));
+  return appendLock;
+}
+async function doAppend(fields) {
+  const head = (await metaGet('chain')) || { id: 'chain', lastSeq: 0, lastHash: 'GENESIS' };
+  const record = await buildRecord(fields, head.lastHash, head.lastSeq + 1);
+  await new Promise((res, rej) => {
+    const t = db.transaction(['records', 'meta'], 'readwrite');
+    t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    // sin await entre los dos put -> la transacción no se cierra sola
+    t.objectStore('records').put(record);
+    t.objectStore('meta').put({ id: 'chain', lastSeq: record.seq, lastHash: record.hash });
+  });
+  return record;
+}
+
+// Recalcula toda la cadena: detecta cualquier hash o prevHash alterado.
+async function verifyRecords(recs) {
+  recs = recs.slice().sort((a, b) => a.seq - b.seq);
+  let prev = 'GENESIS';
+  for (const r of recs) {
+    const { hash, ...content } = r;
+    if (content.prevHash !== prev) return { ok: false, seq: r.seq, reason: 'prevHash roto' };
+    if (await sha256hex(canonical(content)) !== hash) return { ok: false, seq: r.seq, reason: 'hash no coincide' };
+    prev = hash;
+  }
+  return { ok: true, count: recs.length };
+}
+const verifyChain = async () => verifyRecords(await getAllRecords());
+
+/* ============ Fichajes efectivos (aplica correcciones sin tocar el original) ============ */
+function effectivePunches(records, uid) {
+  const map = new Map();
+  for (const r of records)
+    if (r.type === 'fichaje' && r.uid === uid)
+      map.set(r.seq, { seq: r.seq, uid, tipo: r.tipo, ts: r.ts, origen: 'fichaje' });
+  const corr = records.filter(r => r.type === 'correccion' && r.uid === uid).sort((a, b) => a.seq - b.seq);
+  for (const c of corr) {
+    if (c.op === 'anular') map.delete(c.targetSeq);
+    else if (c.op === 'modificar' && map.has(c.targetSeq)) {
+      const p = map.get(c.targetSeq);
+      if (c.tsCorregido != null) p.ts = c.tsCorregido;
+      if (c.tipoCorregido) p.tipo = c.tipoCorregido;
+      p.origen = 'corregido';
+    } else if (c.op === 'agregar')
+      map.set('c' + c.seq, { seq: 'c' + c.seq, uid, tipo: c.tipoCorregido, ts: c.tsCorregido, origen: 'añadido' });
+  }
+  return [...map.values()].sort((a, b) => a.ts - b.ts);
+}
+
+/* ============================ Cálculo de horas ============================ */
+const pad = n => String(n).padStart(2, '0');
+const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const hhmm = ts => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const msToH = ms => ms / 3600000;
+const fmtH = ms => { const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000); return `${h}h ${pad(m)}m`; };
+
+// Empareja ENTRADA con SALIDA del mismo día. Marca incompleto si algo queda sin pareja.
+function computeDays(records, uid) {
+  const byDay = {};
+  for (const p of effectivePunches(records, uid)) (byDay[dayKey(p.ts)] ||= []).push(p);
+  const days = [];
+  for (const [date, list] of Object.entries(byDay)) {
+    list.sort((a, b) => a.ts - b.ts);
+    let open = null, worked = 0, incompleto = false;
+    for (const p of list) {
+      if (p.tipo === 'entrada') { if (open) incompleto = true; open = p; }
+      else { if (open) { worked += p.ts - open.ts; open = null; } else incompleto = true; }
+    }
+    if (open) incompleto = true;
+    days.push({ date, worked, incompleto, list });
+  }
+  days.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return days;
+}
+
+function thisWeek() { const d = new Date(); const off = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - off); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return [iso(mon), iso(sun)]; }
+function thisMonth() { const d = new Date(); return [iso(new Date(d.getFullYear(), d.getMonth(), 1)), iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; }
+
+/* ============================ Utilidades UI ============================ */
+const $ = s => document.querySelector(s);
+const show = id => { document.querySelectorAll('.screen').forEach(e => e.classList.remove('active')); $(id).classList.add('active'); };
+const setPanel = html => { $('#adminBody').innerHTML = html; };
+let toastT;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2500); }
+function download(name, mime, data) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type: mime }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const normUid = s => String(s || '').toLowerCase();
+function workerSelect(id, ws, sel) { return `<select id="${id}">${ws.map(w => `<option value="${w.uid}" ${w.uid === sel ? 'selected' : ''}>${w.nombre}</option>`).join('')}</select>`; }
+
+// Reduce la foto a 320px máx para no llenar la memoria.
+async function fileToThumb(file) {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, 320 / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(img, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', 0.8);
+}
+
+/* ============================ KIOSCO ============================ */
+let nfcReader = null, captureCb = null, lastRead = { uid: null, at: 0 }, resultTimer;
+
+async function onCard(raw) {
+  const uid = normUid(raw);
+  if (captureCb) { const cb = captureCb; captureCb = null; cb(uid); toast('Tarjeta leída: ' + uid); return; }
+  const now = Date.now();
+  if (uid === lastRead.uid && now - lastRead.at < 4000) return; // ignora la misma tarjeta repetida
+  lastRead = { uid, at: now };
+  const worker = await getWorker(uid);
+  if (!worker) return showResult(null, uid);
+  const eff = effectivePunches(await getAllRecords(), uid);
+  const last = eff[eff.length - 1];
+  const sameDay = last && dayKey(last.ts) === dayKey(now);
+  // ponytail: jornada seguida -> cada día nuevo empieza por ENTRADA; dentro del día alterna.
+  const tipo = (sameDay && last.tipo === 'entrada') ? 'salida' : 'entrada';
+  const rec = await appendRecord({ type: 'fichaje', uid, tipo, ts: now });
+  showResult(worker, uid, tipo, rec.ts);
+}
+window.simulateCard = onCard; // probar sin NFC desde la consola: simulateCard('04:aa:bb')
+
+function showResult(worker, uid, tipo, ts) {
+  clearTimeout(resultTimer);
+  const box = $('#result');
+  $('#rest').classList.add('hidden');
+  box.className = '';
+  if (!worker) {
+    box.classList.add('unknown');
+    $('#rPhoto').style.display = 'none';
+    $('#rName').textContent = 'Tarjeta no dada de alta';
+    $('#rMsg').textContent = '✗';
+    $('#rTime').textContent = uid;
+  } else {
+    box.classList.add(tipo === 'entrada' ? 'entrada' : 'salida');
+    $('#rPhoto').style.display = worker.foto ? 'block' : 'none';
+    $('#rPhoto').src = worker.foto || '';
+    $('#rName').textContent = worker.nombre;
+    $('#rMsg').textContent = tipo === 'entrada' ? 'ENTRADA registrada ✓' : 'SALIDA registrada ✓';
+    $('#rTime').textContent = hhmm(ts);
+  }
+  resultTimer = setTimeout(() => { box.classList.add('hidden'); $('#rest').classList.remove('hidden'); }, 3500);
+}
+
+async function startNFC() {
+  if (!('NDEFReader' in window)) { $('#nfcWarn').classList.remove('hidden'); return; }
+  try {
+    const r = new NDEFReader();
+    await r.scan();                 // pide permiso NFC (requiere HTTPS y a veces un toque)
+    r.onreading = e => onCard(e.serialNumber);
+    nfcReader = r;
+    $('#tapHint').classList.add('hidden');
+  } catch (err) {
+    $('#tapHint').classList.remove('hidden'); // necesita un gesto del usuario -> tocar pantalla
+  }
+}
+async function captureUid(cb) { if (!nfcReader) await startNFC(); captureCb = cb; toast('Acerca la tarjeta…'); }
+
+/* ============================ PIN ============================ */
+const pinHash = pin => sha256hex('pin:' + pin);
+async function checkPin(pin) {
+  const stored = await metaGet('pin');
+  if (!stored) return pin === '1234';            // PIN por defecto la primera vez
+  return (await pinHash(pin)) === stored.hash;
+}
+let pinBuf = '', pinCb = null;
+function openPinpad(label, cb) { pinBuf = ''; pinCb = cb; $('#pinLabel').textContent = label; drawPin(); show('#adminLogin'); }
+function drawPin() { $('#pinDots').textContent = '●'.repeat(pinBuf.length) + '○'.repeat(Math.max(0, 4 - pinBuf.length)); }
+function openAdminLogin() {
+  openPinpad('Introduce el PIN', async pin => {
+    if (await checkPin(pin)) openAdmin();
+    else { $('#pinLabel').textContent = 'PIN incorrecto'; pinBuf = ''; drawPin(); }
+  });
+}
+
+/* ============================ ADMIN ============================ */
+function openAdmin() { show('#admin'); panelHoras(); }
+function exitAdmin() { captureCb = null; show('#kiosk'); }
+
+/* --- Alta de tarjeta --- */
+async function panelAlta() {
+  setPanel(`
+    <h2>Alta de tarjeta</h2>
+    <p>1. Acerca la tarjeta nueva y pulsa <b>Leer tarjeta</b> (o escribe el número).</p>
+    <div class="row"><button id="altaLeer" class="btn">📶 Leer tarjeta</button>
+      <input id="altaUid" placeholder="UID de la tarjeta"></div>
+    <p>2. Nombre del trabajador:</p>
+    <input id="altaNombre" placeholder="Nombre">
+    <p>3. Foto (cámara o galería):</p>
+    <input id="altaFoto" type="file" accept="image/*" capture="environment">
+    <img id="altaPrev" class="prev hidden">
+    <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button></div>
+    <div id="altaMsg" class="msg"></div>
+    <h3>Tarjetas dadas de alta</h3><div id="altaLista"></div>`);
+  let fotoData = '';
+  $('#altaLeer').onclick = () => captureUid(uid => { $('#altaUid').value = uid; });
+  $('#altaFoto').onchange = async e => { if (e.target.files[0]) { fotoData = await fileToThumb(e.target.files[0]); const p = $('#altaPrev'); p.src = fotoData; p.classList.remove('hidden'); } };
+  $('#altaGuardar').onclick = async () => {
+    const uid = normUid($('#altaUid').value.trim()), nombre = $('#altaNombre').value.trim();
+    if (!uid || !nombre) { $('#altaMsg').textContent = 'Falta el UID o el nombre'; return; }
+    const exists = await getWorker(uid);
+    await putWorker({ uid, nombre, foto: fotoData || (exists && exists.foto) || '', alta_ts: Date.now() });
+    $('#altaMsg').textContent = exists ? 'Tarjeta actualizada ✓' : 'Tarjeta dada de alta ✓';
+    captureCb = null; renderAltaLista();
+  };
+  renderAltaLista();
+}
+async function renderAltaLista() {
+  const ws = await getAllWorkers();
+  $('#altaLista').innerHTML = ws.length
+    ? ws.map(w => `<div class="wrow"><img src="${w.foto || ''}" class="mini">${w.nombre} <span class="muted">${w.uid}</span></div>`).join('')
+    : '<p class="muted">Ninguna todavía.</p>';
+}
+
+/* --- Corrección (log de auditoría, nunca borra el original) --- */
+async function panelCorreccion() {
+  const ws = await getAllWorkers();
+  if (!ws.length) return setPanel('<h2>Corrección</h2><p class="muted">Primero da de alta trabajadores.</p>');
+  setPanel(`
+    <h2>Corrección de fichajes</h2>
+    <p class="muted">No se borra nada. Se añade un registro de corrección con motivo.</p>
+    <div class="row">${workerSelect('corrW', ws)}
+      <input type="date" id="corrD" value="${iso(new Date())}">
+      <button id="corrVer" class="btn">Ver día</button></div>
+    <div id="corrDay"></div>
+    <h3>Añadir un fichaje que falta</h3>
+    <div class="row">
+      <select id="addTipo"><option value="entrada">Entrada</option><option value="salida">Salida</option></select>
+      <input type="time" id="addTime">
+      <input id="addMot" placeholder="Motivo">
+      <button id="addBtn" class="btn">Añadir</button></div>
+    <div id="corrMsg" class="msg"></div>`);
+  $('#corrVer').onclick = renderCorrDay;
+  $('#addBtn').onclick = async () => {
+    const uid = $('#corrW').value, date = $('#corrD').value, t = $('#addTime').value, mot = $('#addMot').value.trim(), tipo = $('#addTipo').value;
+    if (!uid || !date || !t || !mot) { $('#corrMsg').textContent = 'Faltan datos (el motivo es obligatorio)'; return; }
+    const ts = new Date(`${date}T${t}`).getTime();
+    await appendRecord({ type: 'correccion', op: 'agregar', uid, tipoCorregido: tipo, tsCorregido: ts, motivo: mot, ts: Date.now() });
+    $('#corrMsg').textContent = 'Corrección añadida ✓'; renderCorrDay();
+  };
+  renderCorrDay();
+}
+async function renderCorrDay() {
+  const uid = $('#corrW').value, date = $('#corrD').value;
+  const list = effectivePunches(await getAllRecords(), uid).filter(p => dayKey(p.ts) === date);
+  $('#corrDay').innerHTML = list.length ? list.map(p => `
+    <div class="prow ${p.tipo}">
+      <b>${p.tipo === 'entrada' ? 'ENTRADA' : 'SALIDA'}</b> ${hhmm(p.ts)} <span class="muted">(${p.origen})</span>
+      ${typeof p.seq === 'number' ? `<button class="btn sm" data-anular="${p.seq}">Anular</button>
+      <button class="btn sm" data-mod="${p.seq}">Cambiar hora</button>` : ''}
+    </div>`).join('') : '<p class="muted">Sin fichajes ese día.</p>';
+  $('#corrDay').querySelectorAll('[data-anular]').forEach(b => b.onclick = () => corrOp('anular', +b.dataset.anular));
+  $('#corrDay').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => corrOp('modificar', +b.dataset.mod));
+}
+// ponytail: prompt() basta para el admin (sabe leer); cambiar a modal propio si algún Chrome lo bloquea.
+async function corrOp(op, seq) {
+  const uid = $('#corrW').value, date = $('#corrD').value;
+  let extra = {};
+  if (op === 'modificar') {
+    const nueva = prompt('Nueva hora (HH:MM):'); if (!nueva) return;
+    const ts = new Date(`${date}T${nueva}`).getTime();
+    if (isNaN(ts)) return alert('Hora no válida');
+    extra = { tsCorregido: ts };
+  }
+  const mot = prompt(op === 'anular' ? 'Motivo para anular:' : 'Motivo del cambio:'); if (!mot) return;
+  await appendRecord({ type: 'correccion', op, uid, targetSeq: seq, motivo: mot, ts: Date.now(), ...extra });
+  renderCorrDay();
+}
+
+/* --- Horas / resumen --- */
+async function renderHoursTable(container, from, to, onlyUid) {
+  const recs = await getAllRecords();
+  const workers = (await getAllWorkers()).filter(w => !onlyUid || w.uid === onlyUid);
+  let html = '';
+  for (const w of workers) {
+    const days = computeDays(recs, w.uid).filter(d => (!from || d.date >= from) && (!to || d.date <= to));
+    let tot = 0;
+    html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>Fecha</th><th>Marcas</th><th>Horas</th></tr>`;
+    if (!days.length) html += '<tr><td colspan="3" class="muted">Sin fichajes en el periodo</td></tr>';
+    for (const d of days) {
+      tot += d.worked;
+      const marcas = d.list.map(p => `${p.tipo === 'entrada' ? 'E' : 'S'} ${hhmm(p.ts)}`).join(' · ');
+      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${marcas}</td><td>${d.incompleto ? '⚠ ' : ''}${fmtH(d.worked)}</td></tr>`;
+    }
+    html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
+  }
+  container.innerHTML = html || '<p class="muted">No hay trabajadores.</p>';
+}
+async function panelHoras() {
+  const [f, t] = thisMonth();
+  setPanel(`
+    <h2>Horas trabajadas</h2>
+    <div class="row">
+      <button id="hSem" class="btn">Esta semana</button>
+      <button id="hMes" class="btn">Este mes</button>
+      Desde <input type="date" id="hFrom" value="${f}"> Hasta <input type="date" id="hTo" value="${t}">
+      <button id="hVer" class="btn primary">Ver</button></div>
+    <div id="hTable"></div>`);
+  const go = () => renderHoursTable($('#hTable'), $('#hFrom').value, $('#hTo').value);
+  $('#hVer').onclick = go;
+  $('#hSem').onclick = () => { const [a, b] = thisWeek(); $('#hFrom').value = a; $('#hTo').value = b; go(); };
+  $('#hMes').onclick = () => { const [a, b] = thisMonth(); $('#hFrom').value = a; $('#hTo').value = b; go(); };
+  go();
+}
+
+/* --- Consulta de un trabajador --- */
+async function panelConsulta() {
+  const ws = await getAllWorkers();
+  if (!ws.length) return setPanel('<h2>Consulta</h2><p class="muted">Primero da de alta trabajadores.</p>');
+  const [f, t] = thisMonth();
+  setPanel(`
+    <h2>Consultar un trabajador</h2>
+    <div class="row">${workerSelect('cW', ws)}
+      Desde <input type="date" id="cFrom" value="${f}"> Hasta <input type="date" id="cTo" value="${t}">
+      <button id="cVer" class="btn primary">Ver</button></div>
+    <div id="cTable"></div>`);
+  const go = () => renderHoursTable($('#cTable'), $('#cFrom').value, $('#cTo').value, $('#cW').value);
+  $('#cVer').onclick = go; go();
+}
+
+/* --- Exportar --- */
+const csvCell = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const csvRow = arr => arr.map(csvCell).join(';');
+const numES = ms => msToH(ms).toFixed(2).replace('.', ',');
+
+async function exportCSV() {
+  const recs = (await getAllRecords()).sort((a, b) => a.seq - b.seq);
+  const workers = await getAllWorkers();
+  const nombre = uid => (workers.find(w => w.uid === uid) || {}).nombre || uid;
+  const L = [];
+  L.push('FICHAJES Y CORRECCIONES (registro inalterable, encadenado por hash)');
+  L.push(csvRow(['seq', 'tipo_registro', 'uid', 'nombre', 'tipo', 'fecha', 'hora', 'op', 'target_seq', 'motivo', 'hash', 'prev_hash']));
+  for (const r of recs) {
+    if (r.type === 'fichaje')
+      L.push(csvRow([r.seq, 'fichaje', r.uid, nombre(r.uid), r.tipo, dayKey(r.ts), hhmm(r.ts), '', '', '', r.hash, r.prevHash]));
+    else {
+      const ts = r.tsCorregido != null ? r.tsCorregido : r.ts;
+      L.push(csvRow([r.seq, 'correccion', r.uid, nombre(r.uid), r.tipoCorregido || '', dayKey(ts), hhmm(ts), r.op, r.targetSeq || '', r.motivo, r.hash, r.prevHash]));
+    }
+  }
+  L.push('', 'LOG DE AUDITORÍA (solo correcciones)');
+  L.push(csvRow(['seq', 'fecha_correccion', 'hora_correccion', 'uid', 'nombre', 'op', 'target_seq', 'tipo', 'motivo']));
+  for (const r of recs) if (r.type === 'correccion')
+    L.push(csvRow([r.seq, dayKey(r.ts), hhmm(r.ts), r.uid, nombre(r.uid), r.op, r.targetSeq || '', r.tipoCorregido || '', r.motivo]));
+  L.push('', 'RESUMEN DE HORAS POR TRABAJADOR Y DÍA');
+  L.push(csvRow(['trabajador', 'fecha', 'horas', 'estado']));
+  for (const w of workers) {
+    let tot = 0;
+    for (const d of computeDays(recs, w.uid)) { tot += d.worked; L.push(csvRow([w.nombre, d.date, numES(d.worked), d.incompleto ? 'INCOMPLETO' : 'ok'])); }
+    L.push(csvRow([w.nombre, 'TOTAL', numES(tot), '']));
+  }
+  download(`fichajes_${dayKey(Date.now())}.csv`, 'text/csv;charset=utf-8', '﻿' + L.join('\r\n'));
+}
+
+async function exportPDF() {
+  const recs = await getAllRecords();
+  const workers = await getAllWorkers();
+  let html = `<h1>Resumen de horas · Vivero</h1><p>Generado: ${new Date().toLocaleString('es-ES')}</p>`;
+  for (const w of workers) {
+    let tot = 0;
+    html += `<h2>${w.nombre}</h2><table><tr><th>Fecha</th><th>Marcas</th><th>Horas</th><th>Estado</th></tr>`;
+    for (const d of computeDays(recs, w.uid)) {
+      tot += d.worked;
+      const marcas = d.list.map(p => `${p.tipo === 'entrada' ? 'E' : 'S'} ${hhmm(p.ts)}`).join(' · ');
+      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${marcas}</td><td>${fmtH(d.worked)}</td><td>${d.incompleto ? 'INCOMPLETO' : 'ok'}</td></tr>`;
+    }
+    html += `<tr><td colspan="2"><b>TOTAL</b></td><td><b>${fmtH(tot)}</b></td><td></td></tr></table>`;
+  }
+  $('#printArea').innerHTML = html;
+  window.print();
+}
+function panelExportar() {
+  setPanel(`
+    <h2>Exportar</h2>
+    <p>El archivo se guarda en la carpeta <b>Descargas</b> del móvil. Luego cópialo al USB.</p>
+    <div class="row">
+      <button id="expCsv" class="btn primary">Exportar CSV</button>
+      <button id="expPdf" class="btn">Exportar PDF (imprimir → Guardar como PDF)</button></div>
+    <div id="expMsg" class="msg"></div>`);
+  $('#expCsv').onclick = async () => { await exportCSV(); $('#expMsg').textContent = 'CSV generado ✓ (mira en Descargas)'; };
+  $('#expPdf').onclick = exportPDF;
+}
+
+/* --- Integridad --- */
+function panelIntegridad() {
+  setPanel(`
+    <h2>Verificar integridad</h2>
+    <p>Comprueba que ningún fichaje se haya manipulado.</p>
+    <button id="intVer" class="btn primary">Verificar cadena</button>
+    <div id="intMsg" class="msg big"></div>`);
+  $('#intVer').onclick = async () => {
+    const r = await verifyChain();
+    $('#intMsg').innerHTML = r.ok
+      ? `✅ Cadena intacta (${r.count} registros)`
+      : `❌ MANIPULACIÓN detectada en el registro #${r.seq}: ${r.reason}`;
+  };
+}
+
+/* --- Cambiar PIN --- */
+function panelPin() {
+  setPanel(`
+    <h2>Cambiar PIN</h2>
+    <p>PIN nuevo (mínimo 4 dígitos):</p>
+    <input id="pinNew" type="password" inputmode="numeric" placeholder="PIN nuevo">
+    <input id="pinNew2" type="password" inputmode="numeric" placeholder="Repite el PIN">
+    <button id="pinSave" class="btn primary">Guardar PIN</button>
+    <div id="pinMsg" class="msg"></div>`);
+  $('#pinSave').onclick = async () => {
+    const a = $('#pinNew').value, b = $('#pinNew2').value;
+    if (a.length < 4) return $('#pinMsg').textContent = 'Mínimo 4 dígitos';
+    if (a !== b) return $('#pinMsg').textContent = 'No coinciden';
+    await metaPut({ id: 'pin', hash: await pinHash(a) });
+    $('#pinMsg').textContent = 'PIN cambiado ✓';
+  };
+}
+
+/* ============================ Arranque ============================ */
+(async () => {
+  db = await dbp;
+  // Kiosco: intenta NFC; si necesita gesto, mostrará "Toca la pantalla".
+  await startNFC();
+  $('#kiosk').addEventListener('click', e => { if (e.target.id !== 'gear' && !nfcReader) startNFC(); });
+  $('#gear').addEventListener('click', e => { e.stopPropagation(); openAdminLogin(); });
+
+  // Pinpad
+  document.querySelectorAll('.pinpad [data-d]').forEach(b => b.onclick = () => { if (pinBuf.length < 8) { pinBuf += b.dataset.d; drawPin(); } });
+  $('#pinDel').onclick = () => { pinBuf = pinBuf.slice(0, -1); drawPin(); };
+  $('#pinCancel').onclick = () => show('#kiosk');
+  $('#pinOk').onclick = () => pinCb && pinCb(pinBuf);
+
+  // Menú admin
+  $('#navAlta').onclick = panelAlta;
+  $('#navCorr').onclick = panelCorreccion;
+  $('#navHoras').onclick = panelHoras;
+  $('#navConsulta').onclick = panelConsulta;
+  $('#navExport').onclick = panelExportar;
+  $('#navInteg').onclick = panelIntegridad;
+  $('#navPin').onclick = panelPin;
+  $('#navSalir').onclick = exitAdmin;
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+
+/* ---- Autocomprobación de la cadena (corre en consola al cargar) ---- */
+async function selfTest() {
+  let recs = [], prev = 'GENESIS', seq = 0;
+  for (const f of [{ type: 'fichaje', uid: 'a', tipo: 'entrada', ts: 1000 }, { type: 'fichaje', uid: 'a', tipo: 'salida', ts: 2000 }]) {
+    const r = await buildRecord(f, prev, ++seq); recs.push(r); prev = r.hash;
+  }
+  const good = await verifyRecords(recs);
+  const bad = await verifyRecords(recs.map((r, i) => i === 0 ? { ...r, ts: 9999 } : r));
+  console.log('[selfTest]', good.ok && !bad.ok ? 'OK' : 'FALLO', good, bad);
+}
+window.__selfTest = selfTest;
+selfTest();
