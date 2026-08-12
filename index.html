@@ -15,7 +15,22 @@
 <section id="kiosk" class="screen active">
   <button id="gear" title="Administrador">&#9881;</button>
   <div id="rest">
-    <div class="rest-emoji">&#127793;</div>
+    <div id="clock">--:--</div>
+    <div id="restDate"></div>
+    <svg id="restArt" viewBox="0 0 260 190" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <g transform="rotate(-10 109 104)">
+        <rect x="34" y="54" width="150" height="100" rx="16" fill="#ffffff"/>
+        <path d="M64 112 Q 64 80 104 80 Q 104 118 64 112 Z" fill="#1b8a3a"/>
+        <path d="M70 108 L 98 86" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+        <rect x="116" y="90" width="52" height="9" rx="4.5" fill="#cfe8d6"/>
+        <rect x="116" y="110" width="36" height="9" rx="4.5" fill="#cfe8d6"/>
+      </g>
+      <g class="waves" stroke="#ffffff" stroke-width="11" stroke-linecap="round" fill="none">
+        <path class="w1" d="M196 76 a 30 30 0 0 1 0 48"/>
+        <path class="w2" d="M210 62 a 46 46 0 0 1 0 76"/>
+        <path class="w3" d="M224 48 a 62 62 0 0 1 0 104"/>
+      </g>
+    </svg>
     <div class="rest-text">Acerca tu tarjeta</div>
     <div id="tapHint" class="hidden">Toca la pantalla para activar</div>
     <div id="nfcWarn" class="hidden">Este navegador no soporta NFC.<br>Usa Chrome en Android.</div>
@@ -50,7 +65,7 @@
     <button id="navConsulta">&#128269; Consulta</button>
     <button id="navExport">&#11015; Exportar</button>
     <button id="navInteg">&#128274; Integridad</button>
-    <button id="navPin">&#128273; PIN</button>
+    <button id="navPin">&#9881; Ajustes</button>
     <button id="navSalir">&#8592; Salir</button>
   </div>
   <div id="adminBody"></div>

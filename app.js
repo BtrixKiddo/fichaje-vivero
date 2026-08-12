@@ -220,6 +220,17 @@ async function startNFC() {
 }
 async function captureUid(cb) { if (!nfcReader) await startNFC(); captureCb = cb; toast('Acerca la tarjeta…'); }
 
+// Reloj grande en la pantalla de reposo.
+function startClock() {
+  const c = $('#clock'), d = $('#restDate');
+  const upd = () => {
+    const now = new Date();
+    c.textContent = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    d.textContent = now.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  };
+  upd(); setInterval(upd, 1000);
+}
+
 /* ============================ PIN ============================ */
 const pinHash = pin => sha256hex('pin:' + pin);
 async function checkPin(pin) {
@@ -241,39 +252,53 @@ function openAdminLogin() {
 function openAdmin() { show('#admin'); panelHoras(); }
 function exitAdmin() { captureCb = null; show('#kiosk'); }
 
-/* --- Alta de tarjeta --- */
+/* --- Alta y edición de trabajadores --- */
+let altaFotoData = '';
 async function panelAlta() {
   setPanel(`
-    <h2>Alta de tarjeta</h2>
-    <p>1. Acerca la tarjeta nueva y pulsa <b>Leer tarjeta</b> (o escribe el número).</p>
+    <h2>Trabajadores y tarjetas</h2>
+    <p>Da de alta acercando una tarjeta (o escribe el número), o pulsa <b>Editar</b> en la lista de abajo para cambiar nombre o foto.</p>
     <div class="row"><button id="altaLeer" class="btn">📶 Leer tarjeta</button>
       <input id="altaUid" placeholder="UID de la tarjeta"></div>
-    <p>2. Nombre del trabajador:</p>
+    <p>Nombre:</p>
     <input id="altaNombre" placeholder="Nombre">
-    <p>3. Foto (cámara o galería):</p>
+    <p>Foto (cámara o galería):</p>
     <input id="altaFoto" type="file" accept="image/*">
     <img id="altaPrev" class="prev hidden">
-    <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button></div>
+    <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button>
+      <button id="altaLimpiar" class="btn">Nuevo / limpiar</button></div>
     <div id="altaMsg" class="msg"></div>
-    <h3>Tarjetas dadas de alta</h3><div id="altaLista"></div>`);
-  let fotoData = '';
+    <h3>Trabajadores</h3><div id="altaLista"></div>`);
+  altaFotoData = '';
   $('#altaLeer').onclick = () => captureUid(uid => { $('#altaUid').value = uid; });
-  $('#altaFoto').onchange = async e => { if (e.target.files[0]) { fotoData = await fileToThumb(e.target.files[0]); const p = $('#altaPrev'); p.src = fotoData; p.classList.remove('hidden'); } };
+  $('#altaFoto').onchange = async e => { if (e.target.files[0]) { altaFotoData = await fileToThumb(e.target.files[0]); showAltaPrev(altaFotoData); } };
+  $('#altaLimpiar').onclick = () => { $('#altaUid').value = ''; $('#altaNombre').value = ''; altaFotoData = ''; showAltaPrev(''); $('#altaMsg').textContent = ''; };
   $('#altaGuardar').onclick = async () => {
     const uid = normUid($('#altaUid').value.trim()), nombre = $('#altaNombre').value.trim();
     if (!uid || !nombre) { $('#altaMsg').textContent = 'Falta el UID o el nombre'; return; }
     const exists = await getWorker(uid);
-    await putWorker({ uid, nombre, foto: fotoData || (exists && exists.foto) || '', alta_ts: Date.now() });
-    $('#altaMsg').textContent = exists ? 'Tarjeta actualizada ✓' : 'Tarjeta dada de alta ✓';
+    await putWorker({ uid, nombre, foto: altaFotoData || (exists && exists.foto) || '', alta_ts: (exists && exists.alta_ts) || Date.now() });
+    $('#altaMsg').textContent = exists ? 'Trabajador actualizado ✓' : 'Trabajador dado de alta ✓';
     captureCb = null; renderAltaLista();
   };
   renderAltaLista();
 }
+function showAltaPrev(data) { const p = $('#altaPrev'); if (data) { p.src = data; p.classList.remove('hidden'); } else { p.src = ''; p.classList.add('hidden'); } }
 async function renderAltaLista() {
   const ws = await getAllWorkers();
   $('#altaLista').innerHTML = ws.length
-    ? ws.map(w => `<div class="wrow"><img src="${w.foto || ''}" class="mini">${w.nombre} <span class="muted">${w.uid}</span></div>`).join('')
-    : '<p class="muted">Ninguna todavía.</p>';
+    ? ws.map(w => `<div class="wrow"><img src="${w.foto || ''}" class="mini">${w.nombre} <span class="muted">${w.uid}</span> <button class="btn sm" data-edit="${w.uid}">Editar</button></div>`).join('')
+    : '<p class="muted">Ninguno todavía.</p>';
+  $('#altaLista').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editWorker(b.dataset.edit));
+}
+async function editWorker(uid) {
+  const w = await getWorker(uid); if (!w) return;
+  $('#altaUid').value = w.uid;
+  $('#altaNombre').value = w.nombre;
+  altaFotoData = w.foto || '';
+  showAltaPrev(w.foto || '');
+  $('#altaMsg').textContent = 'Editando a ' + w.nombre + ' — cambia el nombre o la foto y pulsa Guardar';
+  $('#adminBody').scrollIntoView({ block: 'start' });
 }
 
 /* --- Corrección (log de auditoría, nunca borra el original) --- */
@@ -495,15 +520,23 @@ function panelIntegridad() {
   };
 }
 
-/* --- Cambiar PIN --- */
+/* --- Ajustes: cambiar PIN + borrar datos --- */
 function panelPin() {
   setPanel(`
-    <h2>Cambiar PIN</h2>
+    <h2>Ajustes</h2>
+    <h3>Cambiar PIN</h3>
     <p>PIN nuevo (mínimo 4 dígitos):</p>
     <input id="pinNew" type="password" inputmode="numeric" placeholder="PIN nuevo">
     <input id="pinNew2" type="password" inputmode="numeric" placeholder="Repite el PIN">
     <button id="pinSave" class="btn primary">Guardar PIN</button>
-    <div id="pinMsg" class="msg"></div>`);
+    <div id="pinMsg" class="msg"></div>
+    <hr style="margin:22px 0;border:none;border-top:1px solid #ddd">
+    <h3>Borrar todos los datos</h3>
+    <p class="muted">Borra <b>todos los fichajes y todas las tarjetas</b>. Úsalo solo para empezar de cero
+    (por ejemplo, antes de usar las tarjetas reales). <b>No se puede deshacer.</b> Si tienes fichajes que
+    quieras guardar, expórtalos antes en <b>Exportar</b>.</p>
+    <button id="resetBtn" class="btn" style="background:#c62828">🗑 Borrar todos los datos</button>
+    <div id="resetMsg" class="msg"></div>`);
   $('#pinSave').onclick = async () => {
     const a = $('#pinNew').value, b = $('#pinNew2').value;
     if (a.length < 4) return $('#pinMsg').textContent = 'Mínimo 4 dígitos';
@@ -511,11 +544,29 @@ function panelPin() {
     await metaPut({ id: 'pin', hash: await pinHash(a) });
     $('#pinMsg').textContent = 'PIN cambiado ✓';
   };
+  $('#resetBtn').onclick = async () => {
+    const t = prompt('Esto borrará TODOS los fichajes y tarjetas.\nEscribe BORRAR (en mayúsculas) para confirmar:');
+    if (t !== 'BORRAR') return $('#resetMsg').textContent = 'Cancelado (no se borró nada).';
+    await resetAllData();
+    $('#resetMsg').textContent = 'Datos borrados. Todo a cero ✓';
+  };
+}
+// Borra fichajes + tarjetas y reinicia la cadena. Conserva el PIN.
+async function resetAllData() {
+  await new Promise((res, rej) => {
+    const t = db.transaction(['records', 'workers', 'meta'], 'readwrite');
+    t.oncomplete = res; t.onerror = () => rej(t.error);
+    t.objectStore('records').clear();
+    t.objectStore('workers').clear();
+    t.objectStore('meta').delete('chain');
+  });
+  lastRead = { uid: null, at: 0 };
 }
 
 /* ============================ Arranque ============================ */
 (async () => {
   db = await dbp;
+  startClock();
   // Kiosco: intenta NFC; si necesita gesto, mostrará "Toca la pantalla".
   await startNFC();
   $('#kiosk').addEventListener('click', e => { if (e.target.id !== 'gear' && !nfcReader) startNFC(); });

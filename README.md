@@ -75,6 +75,25 @@ Para cambiar la foto o el nombre, vuelve a leer la misma tarjeta y guarda de nue
   - Fondo **rojo**: tarjeta no dada de alta.
 - A los ~3-4 segundos vuelve solo a la pantalla de reposo.
 - El sistema decide solo si es entrada o salida (alterna según el último fichaje del día).
+- En reposo se ve la **hora y la fecha** grandes.
+
+### Cuántas veces fichar según el horario
+
+El sistema alterna entrada/salida solo, así que basta con **acercar la tarjeta en cada momento**:
+
+- **Verano (julio y agosto)** — jornada seguida 6:00 a 14:00. Se ficha **2 veces**:
+  1. Al **entrar** (6:00) → verde.
+  2. Al **salir** (14:00) → naranja.
+- **Resto del año (desde septiembre)** — jornada partida 7:30–13:00 y 13:30–16:00, con media
+  hora para comer. Se ficha **4 veces**:
+  1. Al **entrar** (7:30) → verde.
+  2. Al **irse a comer** (13:00) → naranja.
+  3. Al **volver de comer** (13:30) → verde.
+  4. Al **salir** (16:00) → naranja.
+
+La media hora de la comida **no cuenta** como trabajada (el sistema resta el hueco entre la
+salida y la siguiente entrada). Si alguien se olvida de fichar alguna de las 4, ese día sale
+marcado como **incompleto** y se arregla en *Corrección*.
 
 ---
 
@@ -82,17 +101,20 @@ Para cambiar la foto o el nombre, vuelve a leer la misma tarjeta y guarda de nue
 
 Engranaje ⚙️ → PIN (por defecto **1234**). Menú:
 
-- **Alta tarjeta**: registrar / actualizar trabajadores.
+- **Alta tarjeta**: dar de alta trabajadores y **editar** el nombre o la foto de los que ya
+  existen (botón *Editar* en la lista).
 - **Corrección**: NO borra ni edita el original. Añade un registro de corrección con
-  **motivo** (añadir un fichaje olvidado, anular uno erróneo o cambiar la hora). Queda todo
-  en el log de auditoría.
-- **Horas**: horas por día (salida − entrada) y **totales** por trabajador y periodo
-  (*Esta semana* / *Este mes* / rango de fechas). Los días **incompletos** (falta entrada o
-  salida) salen marcados en **rojo** para corregirlos.
+  **motivo** (añadir un fichaje olvidado, anular uno erróneo o cambiar la hora). Las horas
+  puestas a mano por el administrador se marcan con un **\*** en los listados. Queda todo en
+  el log de auditoría.
+- **Horas**: horas por día y **totales** por trabajador y periodo (*Esta semana* / *Este mes*
+  / rango de fechas). Los días **incompletos** (falta entrada o salida) salen en **rojo**.
 - **Consulta**: ver los fichajes de un trabajador concreto.
 - **Exportar**: genera el archivo (ver punto 7).
 - **Integridad**: comprueba que **nadie ha manipulado** los fichajes (cadena de hashes).
-- **PIN**: cambia el PIN. **Cámbialo el primer día** (el 1234 es solo inicial).
+- **Ajustes**: cambiar el **PIN** (cámbialo el primer día, el 1234 es solo inicial) y
+  **Borrar todos los datos** (para empezar de cero con las tarjetas reales; pide confirmación
+  y no se puede deshacer).
 
 ---
 
