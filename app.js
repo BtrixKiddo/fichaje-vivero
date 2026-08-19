@@ -273,12 +273,14 @@ function startClock() {
 
 /* ============================ MODO PERSONAL ============================ */
 // Aplica el modo guardado: kiosco (NFC) o personal (botón de un solo trabajador).
+let personalTimer = null;
 async function applyMode() {
   const cfg = (await metaGet('config')) || { modo: 'kiosco' };
   if (cfg.modo === 'personal' && cfg.personalUid && await getWorker(cfg.personalUid)) {
     await setupPersonal(cfg.personalUid);
     show('#personal');
   } else {
+    clearInterval(personalTimer);
     show('#kiosk');
     if (!nfcReader) startNFC();
   }
@@ -290,6 +292,8 @@ async function setupPersonal(uid) {
   $('#pPhoto').style.display = w.foto ? 'block' : 'none';
   $('#pName').textContent = w.nombre;
   await personalRefresh(uid);
+  clearInterval(personalTimer);
+  personalTimer = setInterval(() => updatePersonalStatus(uid), 20000); // horas del día en vivo
 }
 async function personalRefresh(uid) {
   const tipo = await nextTipo(uid);
@@ -302,6 +306,19 @@ async function personalRefresh(uid) {
     showResult(await getWorker(uid), uid, t, rec.ts);
     setTimeout(() => personalRefresh(uid), 3600);
   };
+  await updatePersonalStatus(uid);
+}
+// Muestra si está dentro/fuera hoy y cuántas horas lleva.
+async function updatePersonalStatus(uid) {
+  const el = $('#pStatus'); if (!el) return;
+  const hoy = dayKey(Date.now());
+  const eff = effectivePunches(await getAllRecords(), uid).filter(p => dayKey(p.ts) === hoy);
+  let worked = 0, open = null;
+  for (const p of eff) { if (p.tipo === 'entrada') open = p; else if (open) { worked += p.ts - open.ts; open = null; } }
+  const live = worked + (open ? Date.now() - open.ts : 0);
+  if (open) { el.className = 'pstatus in'; el.innerHTML = `<span class="pdot"></span>Dentro desde las ${hhmm(open.ts)} · <b>${fmtH(live)}</b> hoy`; }
+  else if (eff.length) { el.className = 'pstatus out'; el.innerHTML = `Fuera · <b>${fmtH(live)}</b> trabajadas hoy`; }
+  else { el.className = 'pstatus out'; el.textContent = 'Aún no has fichado hoy'; }
 }
 
 /* ============================ PIN ============================ */
@@ -388,14 +405,14 @@ async function editWorker(uid) {
 }
 
 /* --- Corrección (log de auditoría, nunca borra el original) --- */
-async function panelCorreccion() {
+async function panelCorreccion(preUid, preDate) {
   const ws = await getAllWorkers();
   if (!ws.length) return setPanel('<h2>Corrección</h2><p class="muted">Primero da de alta trabajadores.</p>');
   setPanel(`
     <h2>Corrección de fichajes</h2>
     <p class="muted">No se borra nada. Se añade un registro de corrección con motivo.</p>
-    <div class="row">${workerSelect('corrW', ws)}
-      <input type="date" id="corrD" value="${iso(new Date())}">
+    <div class="row">${workerSelect('corrW', ws, preUid)}
+      <input type="date" id="corrD" value="${preDate || iso(new Date())}">
       <button id="corrVer" class="btn">Ver día</button></div>
     <div id="corrDay"></div>
     <h3>Añadir un fichaje que falta</h3>
@@ -440,6 +457,30 @@ async function corrOp(op, seq) {
   const mot = prompt(op === 'anular' ? 'Motivo para anular:' : 'Motivo del cambio:'); if (!mot) return;
   await appendRecord({ type: 'correccion', op, uid, targetSeq: seq, motivo: mot, ts: Date.now(), ...extra });
   renderCorrDay();
+}
+
+/* --- Días incompletos (para corregir de un vistazo) --- */
+async function panelIncompletos() {
+  const recs = await getAllRecords();
+  const workers = await getAllWorkers();
+  const items = [];
+  const hoy = dayKey(Date.now());
+  for (const w of workers)
+    for (const d of computeDays(recs, w.uid, ruleFor(w)))
+      // excluye hoy: quien está fichado y aún no ha salido no es un error, es que sigue trabajando
+      if (d.incompleto && d.date < hoy) items.push({ nombre: w.nombre, uid: w.uid, date: d.date, list: d.list });
+  items.sort((a, b) => (a.date < b.date ? 1 : -1)); // más recientes primero
+  const rows = items.map(it => {
+    const marcas = it.list.map(p => `${p.tipo === 'entrada' ? 'E' : 'S'} ${hhmm(p.ts)}`).join(' · ') || '—';
+    return `<tr><td>${it.nombre}</td><td>${it.date}</td><td>${marcas}</td><td><button class="btn sm" data-uid="${it.uid}" data-date="${it.date}">Corregir</button></td></tr>`;
+  }).join('');
+  setPanel(`
+    <h2>Días incompletos</h2>
+    <p class="muted">Días con falta de entrada o salida. Pulsa <b>Corregir</b> para arreglarlos.</p>
+    ${items.length
+      ? `<div class="scrollx"><table class="grid"><tr><th>Trabajador</th><th>Fecha</th><th>Marcas</th><th></th></tr>${rows}</table></div>`
+      : '<p class="msg big">✅ No hay días incompletos.</p>'}`);
+  document.querySelectorAll('#adminBody [data-uid]').forEach(b => b.onclick = () => panelCorreccion(b.dataset.uid, b.dataset.date));
 }
 
 /* --- Horas / resumen --- */
@@ -731,8 +772,9 @@ async function resetAllData() {
 
   // Menú admin
   $('#navAlta').onclick = panelAlta;
-  $('#navCorr').onclick = panelCorreccion;
+  $('#navCorr').onclick = () => panelCorreccion();
   $('#navHoras').onclick = panelHoras;
+  $('#navIncompletos').onclick = panelIncompletos;
   $('#navConsulta').onclick = panelConsulta;
   $('#navExport').onclick = panelExportar;
   $('#navInteg').onclick = panelIntegridad;

@@ -45,6 +45,7 @@
     <div id="pDate"></div>
     <img id="pPhoto" alt="">
     <div id="pName"></div>
+    <div id="pStatus" class="pstatus"></div>
     <button id="pBtn" class="bigbtn">FICHAR</button>
   </div>
 </section>
@@ -73,14 +74,15 @@
 <!-- ===== ADMIN ===== -->
 <section id="admin" class="screen">
   <div id="adminNav">
-    <button id="navAlta">&#10133; Alta tarjeta</button>
-    <button id="navCorr">&#9998; Corrección</button>
-    <button id="navHoras">&#9201; Horas</button>
-    <button id="navConsulta">&#128269; Consulta</button>
-    <button id="navExport">&#11015; Exportar</button>
-    <button id="navInteg">&#128274; Integridad</button>
-    <button id="navPin">&#9881; Ajustes</button>
-    <button id="navSalir">&#8592; Salir</button>
+    <button id="navAlta"><span class="ic">&#10133;</span><span>Alta</span></button>
+    <button id="navCorr"><span class="ic">&#9998;</span><span>Corrección</span></button>
+    <button id="navHoras"><span class="ic">&#9201;</span><span>Horas</span></button>
+    <button id="navIncompletos"><span class="ic">&#9888;</span><span>Incompletos</span></button>
+    <button id="navConsulta"><span class="ic">&#128269;</span><span>Consulta</span></button>
+    <button id="navExport"><span class="ic">&#11015;</span><span>Exportar</span></button>
+    <button id="navInteg"><span class="ic">&#128274;</span><span>Integridad</span></button>
+    <button id="navPin"><span class="ic">&#9881;</span><span>Ajustes</span></button>
+    <button id="navSalir" class="salir"><span class="ic">&#8592;</span><span>Salir</span></button>
   </div>
   <div id="adminBody"></div>
 </section>
