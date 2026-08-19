@@ -99,24 +99,41 @@ const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const msToH = ms => ms / 3600000;
 const fmtH = ms => { const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000); return `${h}h ${pad(m)}m`; };
 
+// Regla de pausa de comida por trabajador (por defecto: verano jul/ago sin pausa, resto −30 min).
+function ruleFor(w) {
+  const p = (w && w.pausa) || {};
+  return { min: p.min != null ? p.min : 30, cuando: p.cuando || 'invierno', umbralH: p.umbralH != null ? p.umbralH : 6 };
+}
 // Empareja ENTRADA con SALIDA del mismo día. Marca incompleto si algo queda sin pareja.
-function computeDays(records, uid) {
+function computeDays(records, uid, rule) {
+  rule = rule || ruleFor(null);
   const byDay = {};
   for (const p of effectivePunches(records, uid)) (byDay[dayKey(p.ts)] ||= []).push(p);
   const days = [];
   for (const [date, list] of Object.entries(byDay)) {
     list.sort((a, b) => a.ts - b.ts);
-    let open = null, worked = 0, incompleto = false;
+    let open = null, worked = 0, incompleto = false, pares = 0;
     for (const p of list) {
       if (p.tipo === 'entrada') { if (open) incompleto = true; open = p; }
-      else { if (open) { worked += p.ts - open.ts; open = null; } else incompleto = true; }
+      else { if (open) { worked += p.ts - open.ts; open = null; pares++; } else incompleto = true; }
     }
     if (open) incompleto = true;
-    days.push({ date, worked, incompleto, list });
+    // Si solo hay UN tramo (no ficharon la comida) y es jornada larga, se resta la pausa.
+    // Si fichan 4 veces, ya queda excluida por el hueco y no se resta nada.
+    const mes = +date.split('-')[1];
+    const aplica = rule.cuando === 'siempre' ? true : (rule.cuando === 'invierno' ? !(mes === 7 || mes === 8) : false);
+    let descanso = 0;
+    // ponytail: umbral en horas para no restar comida en una media jornada (p. ej. solo la mañana).
+    if (aplica && rule.min > 0 && !incompleto && pares === 1 && worked >= rule.umbralH * 3600000) {
+      descanso = rule.min * 60000; worked -= descanso;
+    }
+    days.push({ date, worked, incompleto, list, descanso });
   }
   days.sort((a, b) => (a.date < b.date ? -1 : 1));
   return days;
 }
+// Texto de estado del día (para Excel/PDF/pantalla).
+const estadoTxt = d => d.incompleto ? 'INCOMPLETO' : (d.descanso ? `OK (-${d.descanso / 60000} min comida)` : 'OK');
 
 // Un fichaje es "a mano" si el admin lo añadió o corrigió (no salió del kiosco).
 const isManual = p => p.origen !== 'fichaje';
@@ -137,6 +154,24 @@ function describeCorr(c) {
 
 function thisWeek() { const d = new Date(); const off = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - off); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return [iso(mon), iso(sun)]; }
 function thisMonth() { const d = new Date(); return [iso(new Date(d.getFullYear(), d.getMonth(), 1)), iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; }
+function thisYear() { const y = new Date().getFullYear(); return [`${y}-01-01`, `${y}-12-31`]; }
+
+// Agrupar días por semana (lunes) o por mes, para los totales.
+function mondayOf(dateStr) { const d = new Date(dateStr + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; }
+const weekKey = dateStr => iso(mondayOf(dateStr));
+const monthKey = dateStr => dateStr.slice(0, 7);
+function weekLabel(mondayIso) {
+  const m = new Date(mondayIso + 'T00:00:00'), s = new Date(m); s.setDate(m.getDate() + 6);
+  const f = dt => dt.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+  return `${f(m)} – ${f(s)}`;
+}
+const monthLabel = ym => { const [y, m] = ym.split('-'); return new Date(+y, +m - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }); };
+// Suma días por semana o por mes -> [{label, worked, dias, inc}]
+function groupTotals(days, group) {
+  const keyFn = group === 'semana' ? weekKey : monthKey, labelFn = group === 'semana' ? weekLabel : monthLabel, g = {};
+  for (const d of days) { const o = g[keyFn(d.date)] || (g[keyFn(d.date)] = { worked: 0, inc: 0, dias: 0 }); o.worked += d.worked; if (d.incompleto) o.inc++; o.dias++; }
+  return Object.keys(g).sort().map(k => ({ label: labelFn(k), ...g[k] }));
+}
 
 /* ============================ Utilidades UI ============================ */
 const $ = s => document.querySelector(s);
@@ -166,6 +201,13 @@ async function fileToThumb(file) {
 /* ============================ KIOSCO ============================ */
 let nfcReader = null, captureCb = null, lastRead = { uid: null, at: 0 }, resultTimer;
 
+// Alterna: cada día nuevo empieza por ENTRADA; dentro del día alterna entrada/salida.
+async function nextTipo(uid) {
+  const eff = effectivePunches(await getAllRecords(), uid);
+  const last = eff[eff.length - 1];
+  const sameDay = last && dayKey(last.ts) === dayKey(Date.now());
+  return (sameDay && last.tipo === 'entrada') ? 'salida' : 'entrada';
+}
 async function onCard(raw) {
   const uid = normUid(raw);
   if (captureCb) { const cb = captureCb; captureCb = null; cb(uid); toast('Tarjeta leída: ' + uid); return; }
@@ -174,11 +216,7 @@ async function onCard(raw) {
   lastRead = { uid, at: now };
   const worker = await getWorker(uid);
   if (!worker) return showResult(null, uid);
-  const eff = effectivePunches(await getAllRecords(), uid);
-  const last = eff[eff.length - 1];
-  const sameDay = last && dayKey(last.ts) === dayKey(now);
-  // ponytail: jornada seguida -> cada día nuevo empieza por ENTRADA; dentro del día alterna.
-  const tipo = (sameDay && last.tipo === 'entrada') ? 'salida' : 'entrada';
+  const tipo = await nextTipo(uid);
   const rec = await appendRecord({ type: 'fichaje', uid, tipo, ts: now });
   showResult(worker, uid, tipo, rec.ts);
 }
@@ -222,13 +260,48 @@ async function captureUid(cb) { if (!nfcReader) await startNFC(); captureCb = cb
 
 // Reloj grande en la pantalla de reposo.
 function startClock() {
-  const c = $('#clock'), d = $('#restDate');
   const upd = () => {
     const now = new Date();
-    c.textContent = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    d.textContent = now.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+    const h = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    const f = now.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+    for (const [t, d] of [['#clock', '#restDate'], ['#pClock', '#pDate']]) {
+      const te = $(t), de = $(d); if (te) te.textContent = h; if (de) de.textContent = f;
+    }
   };
   upd(); setInterval(upd, 1000);
+}
+
+/* ============================ MODO PERSONAL ============================ */
+// Aplica el modo guardado: kiosco (NFC) o personal (botón de un solo trabajador).
+async function applyMode() {
+  const cfg = (await metaGet('config')) || { modo: 'kiosco' };
+  if (cfg.modo === 'personal' && cfg.personalUid && await getWorker(cfg.personalUid)) {
+    await setupPersonal(cfg.personalUid);
+    show('#personal');
+  } else {
+    show('#kiosk');
+    if (!nfcReader) startNFC();
+  }
+}
+async function setupPersonal(uid) {
+  const w = await getWorker(uid);
+  if (!w) return;
+  $('#pPhoto').src = w.foto || '';
+  $('#pPhoto').style.display = w.foto ? 'block' : 'none';
+  $('#pName').textContent = w.nombre;
+  await personalRefresh(uid);
+}
+async function personalRefresh(uid) {
+  const tipo = await nextTipo(uid);
+  const btn = $('#pBtn');
+  btn.className = 'bigbtn ' + tipo;
+  btn.textContent = tipo === 'entrada' ? 'FICHAR ENTRADA' : 'FICHAR SALIDA';
+  btn.onclick = async () => {
+    const t = await nextTipo(uid);
+    const rec = await appendRecord({ type: 'fichaje', uid, tipo: t, ts: Date.now() });
+    showResult(await getWorker(uid), uid, t, rec.ts);
+    setTimeout(() => personalRefresh(uid), 3600);
+  };
 }
 
 /* ============================ PIN ============================ */
@@ -250,7 +323,7 @@ function openAdminLogin() {
 
 /* ============================ ADMIN ============================ */
 function openAdmin() { show('#admin'); panelHoras(); }
-function exitAdmin() { captureCb = null; show('#kiosk'); }
+function exitAdmin() { captureCb = null; applyMode(); }
 
 /* --- Alta y edición de trabajadores --- */
 let altaFotoData = '';
@@ -265,6 +338,15 @@ async function panelAlta() {
     <p>Foto (cámara o galería):</p>
     <input id="altaFoto" type="file" accept="image/*">
     <img id="altaPrev" class="prev hidden">
+    <p>Regla de comida (para el cálculo de horas):</p>
+    <div class="row">
+      <select id="altaPausaCuando">
+        <option value="invierno">Estándar (restar en invierno)</option>
+        <option value="siempre">Restar siempre</option>
+        <option value="nunca">No restar</option>
+      </select>
+      <input id="altaPausaMin" type="number" min="0" value="30" style="width:80px"> min
+    </div>
     <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button>
       <button id="altaLimpiar" class="btn">Nuevo / limpiar</button></div>
     <div id="altaMsg" class="msg"></div>
@@ -272,12 +354,13 @@ async function panelAlta() {
   altaFotoData = '';
   $('#altaLeer').onclick = () => captureUid(uid => { $('#altaUid').value = uid; });
   $('#altaFoto').onchange = async e => { if (e.target.files[0]) { altaFotoData = await fileToThumb(e.target.files[0]); showAltaPrev(altaFotoData); } };
-  $('#altaLimpiar').onclick = () => { $('#altaUid').value = ''; $('#altaNombre').value = ''; altaFotoData = ''; showAltaPrev(''); $('#altaMsg').textContent = ''; };
+  $('#altaLimpiar').onclick = () => { $('#altaUid').value = ''; $('#altaNombre').value = ''; altaFotoData = ''; showAltaPrev(''); $('#altaPausaCuando').value = 'invierno'; $('#altaPausaMin').value = '30'; $('#altaMsg').textContent = ''; };
   $('#altaGuardar').onclick = async () => {
     const uid = normUid($('#altaUid').value.trim()), nombre = $('#altaNombre').value.trim();
     if (!uid || !nombre) { $('#altaMsg').textContent = 'Falta el UID o el nombre'; return; }
     const exists = await getWorker(uid);
-    await putWorker({ uid, nombre, foto: altaFotoData || (exists && exists.foto) || '', alta_ts: (exists && exists.alta_ts) || Date.now() });
+    const pausa = { cuando: $('#altaPausaCuando').value, min: +$('#altaPausaMin').value || 0 };
+    await putWorker({ uid, nombre, foto: altaFotoData || (exists && exists.foto) || '', alta_ts: (exists && exists.alta_ts) || Date.now(), pausa });
     $('#altaMsg').textContent = exists ? 'Trabajador actualizado ✓' : 'Trabajador dado de alta ✓';
     captureCb = null; renderAltaLista();
   };
@@ -297,7 +380,10 @@ async function editWorker(uid) {
   $('#altaNombre').value = w.nombre;
   altaFotoData = w.foto || '';
   showAltaPrev(w.foto || '');
-  $('#altaMsg').textContent = 'Editando a ' + w.nombre + ' — cambia el nombre o la foto y pulsa Guardar';
+  const r = ruleFor(w);
+  $('#altaPausaCuando').value = r.cuando;
+  $('#altaPausaMin').value = r.min;
+  $('#altaMsg').textContent = 'Editando a ' + w.nombre + ' — cambia lo que quieras y pulsa Guardar';
   $('#adminBody').scrollIntoView({ block: 'start' });
 }
 
@@ -357,39 +443,56 @@ async function corrOp(op, seq) {
 }
 
 /* --- Horas / resumen --- */
-async function renderHoursTable(container, from, to, onlyUid) {
+async function renderHoursTable(container, from, to, onlyUid, group = 'dia') {
   const recs = await getAllRecords();
   const workers = (await getAllWorkers()).filter(w => !onlyUid || w.uid === onlyUid);
   let html = '';
   for (const w of workers) {
-    const days = computeDays(recs, w.uid).filter(d => (!from || d.date >= from) && (!to || d.date <= to));
+    const days = computeDays(recs, w.uid, ruleFor(w)).filter(d => (!from || d.date >= from) && (!to || d.date <= to));
     let tot = 0;
-    html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th></tr>`;
-    if (!days.length) html += '<tr><td colspan="4" class="muted">Sin fichajes en el periodo</td></tr>';
-    for (const d of days) {
-      tot += d.worked;
-      const c = dayCols(d);
-      html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td>${d.incompleto ? '⚠ ' : ''}${fmtH(d.worked)}</td></tr>`;
+    if (group === 'dia') {
+      html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th></tr>`;
+      if (!days.length) html += '<tr><td colspan="4" class="muted">Sin fichajes en el periodo</td></tr>';
+      for (const d of days) {
+        tot += d.worked;
+        const c = dayCols(d);
+        html += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td>${d.incompleto ? '⚠ ' : ''}${fmtH(d.worked)}${d.descanso ? ` <span class="muted">(−${d.descanso / 60000}m comida)</span>` : ''}</td></tr>`;
+      }
+      html += `<tr class="tot"><td colspan="3">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
+    } else {
+      const keyFn = group === 'semana' ? weekKey : monthKey;
+      const labelFn = group === 'semana' ? weekLabel : monthLabel;
+      const groups = {};
+      for (const d of days) { const g = groups[keyFn(d.date)] || (groups[keyFn(d.date)] = { worked: 0, inc: 0, dias: 0 }); g.worked += d.worked; if (d.incompleto) g.inc++; g.dias++; }
+      const keys = Object.keys(groups).sort();
+      html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>${group === 'semana' ? 'Semana' : 'Mes'}</th><th>Días</th><th>Horas</th></tr>`;
+      if (!keys.length) html += '<tr><td colspan="3" class="muted">Sin fichajes en el periodo</td></tr>';
+      for (const k of keys) { const g = groups[k]; tot += g.worked; html += `<tr class="${g.inc ? 'inc' : ''}"><td>${labelFn(k)}</td><td>${g.dias}${g.inc ? ` <span class="muted">(${g.inc} incompleto/s)</span>` : ''}</td><td>${fmtH(g.worked)}</td></tr>`; }
+      html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
     }
-    html += `<tr class="tot"><td colspan="3">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
   }
-  html += '<p class="leyenda">⚠ = día incompleto (falta entrada o salida) &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador</p>';
+  html += '<p class="leyenda">⚠ = día/periodo con algún fichaje incompleto &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador &nbsp;·&nbsp; en invierno se resta la comida si solo se ficha entrada y salida</p>';
   container.innerHTML = html || '<p class="muted">No hay trabajadores.</p>';
 }
 async function panelHoras() {
   const [f, t] = thisMonth();
   setPanel(`
     <h2>Horas trabajadas</h2>
-    <div class="row">
+    <div class="row">Ver por:
+      <select id="hGroup"><option value="dia">Día</option><option value="semana">Semana</option><option value="mes">Mes</option></select>
       <button id="hSem" class="btn">Esta semana</button>
       <button id="hMes" class="btn">Este mes</button>
-      Desde <input type="date" id="hFrom" value="${f}"> Hasta <input type="date" id="hTo" value="${t}">
+      <button id="hAno" class="btn">Este año</button>
+    </div>
+    <div class="row">Desde <input type="date" id="hFrom" value="${f}"> Hasta <input type="date" id="hTo" value="${t}">
       <button id="hVer" class="btn primary">Ver</button></div>
     <div id="hTable"></div>`);
-  const go = () => renderHoursTable($('#hTable'), $('#hFrom').value, $('#hTo').value);
+  const go = () => renderHoursTable($('#hTable'), $('#hFrom').value, $('#hTo').value, null, $('#hGroup').value);
   $('#hVer').onclick = go;
-  $('#hSem').onclick = () => { const [a, b] = thisWeek(); $('#hFrom').value = a; $('#hTo').value = b; go(); };
-  $('#hMes').onclick = () => { const [a, b] = thisMonth(); $('#hFrom').value = a; $('#hTo').value = b; go(); };
+  $('#hGroup').onchange = go;
+  $('#hSem').onclick = () => { const [a, b] = thisWeek(); $('#hFrom').value = a; $('#hTo').value = b; $('#hGroup').value = 'dia'; go(); };
+  $('#hMes').onclick = () => { const [a, b] = thisMonth(); $('#hFrom').value = a; $('#hTo').value = b; $('#hGroup').value = 'semana'; go(); };
+  $('#hAno').onclick = () => { const [a, b] = thisYear(); $('#hFrom').value = a; $('#hTo').value = b; $('#hGroup').value = 'mes'; go(); };
   go();
 }
 
@@ -401,11 +504,13 @@ async function panelConsulta() {
   setPanel(`
     <h2>Consultar un trabajador</h2>
     <div class="row">${workerSelect('cW', ws)}
-      Desde <input type="date" id="cFrom" value="${f}"> Hasta <input type="date" id="cTo" value="${t}">
+      <select id="cGroup"><option value="dia">Día</option><option value="semana">Semana</option><option value="mes">Mes</option></select>
+    </div>
+    <div class="row">Desde <input type="date" id="cFrom" value="${f}"> Hasta <input type="date" id="cTo" value="${t}">
       <button id="cVer" class="btn primary">Ver</button></div>
     <div id="cTable"></div>`);
-  const go = () => renderHoursTable($('#cTable'), $('#cFrom').value, $('#cTo').value, $('#cW').value);
-  $('#cVer').onclick = go; go();
+  const go = () => renderHoursTable($('#cTable'), $('#cFrom').value, $('#cTo').value, $('#cW').value, $('#cGroup').value);
+  $('#cVer').onclick = go; $('#cGroup').onchange = go; $('#cW').onchange = go; go();
 }
 
 /* --- Exportar --- */
@@ -426,16 +531,26 @@ async function exportCSV() {
   L.push(csvRow(['Trabajador', 'Fecha', 'Entrada', 'Salida', 'Horas', 'Estado']));
   for (const w of workers) {
     let tot = 0;
-    for (const d of computeDays(recs, w.uid)) {
+    for (const d of computeDays(recs, w.uid, ruleFor(w))) {
       tot += d.worked;
       const c = dayCols(d);
-      L.push(csvRow([w.nombre, d.date, c.ent, c.sal, numES(d.worked), d.incompleto ? 'INCOMPLETO' : 'OK']));
+      L.push(csvRow([w.nombre, d.date, c.ent, c.sal, numES(d.worked), estadoTxt(d)]));
     }
     L.push(csvRow([w.nombre, '', '', 'TOTAL', numES(tot), '']));
     L.push('');
   }
 
-  L.push('=== DETALLE DE FICHAJES (registro inalterable, encadenado por hash) ===');
+  L.push('=== TOTALES POR SEMANA ===');
+  L.push(csvRow(['Trabajador', 'Semana', 'Días', 'Horas', 'Incompletos']));
+  for (const w of workers) for (const g of groupTotals(computeDays(recs, w.uid, ruleFor(w)), 'semana'))
+    L.push(csvRow([w.nombre, g.label, g.dias, numES(g.worked), g.inc || '']));
+
+  L.push('', '=== TOTALES POR MES ===');
+  L.push(csvRow(['Trabajador', 'Mes', 'Días', 'Horas', 'Incompletos']));
+  for (const w of workers) for (const g of groupTotals(computeDays(recs, w.uid, ruleFor(w)), 'mes'))
+    L.push(csvRow([w.nombre, g.label, g.dias, numES(g.worked), g.inc || '']));
+
+  L.push('', '=== DETALLE DE FICHAJES (registro inalterable, encadenado por hash) ===');
   L.push(csvRow(['Seq', 'Tipo registro', 'Trabajador', 'Marca', 'Fecha', 'Hora', 'Origen', 'Motivo', 'Hash', 'Hash anterior']));
   for (const r of recs) {
     if (r.type === 'fichaje')
@@ -466,12 +581,18 @@ async function exportPDF() {
       <p>Control horario — art. 34.9 del Estatuto de los Trabajadores<br>
       Generado el ${new Date().toLocaleString('es-ES')}</p>
     </div>`;
+  const totalsTable = (title, arr, colName) => arr.length ? `
+      <div class="subt">${title}</div>
+      <table><thead><tr><th>${colName}</th><th>Días</th><th>Horas</th></tr></thead><tbody>
+      ${arr.map(g => `<tr class="${g.inc ? 'inc' : ''}"><td>${g.label}</td><td>${g.dias}${g.inc ? ` (${g.inc} incompleto/s)` : ''}</td><td class="num">${fmtH(g.worked)}</td></tr>`).join('')}
+      </tbody></table>` : '';
   for (const w of workers) {
+    const days = computeDays(recs, w.uid, ruleFor(w));
     let tot = 0, incompletos = 0, rows = '';
-    for (const d of computeDays(recs, w.uid)) {
+    for (const d of days) {
       tot += d.worked; if (d.incompleto) incompletos++;
       const c = dayCols(d);
-      rows += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td class="num">${fmtH(d.worked)}</td><td>${d.incompleto ? '⚠ Incompleto' : 'OK'}</td></tr>`;
+      rows += `<tr class="${d.incompleto ? 'inc' : ''}"><td>${d.date}</td><td>${c.ent || '—'}</td><td>${c.sal || '—'}</td><td class="num">${fmtH(d.worked)}</td><td>${d.incompleto ? '⚠ Incompleto' : (d.descanso ? `OK · −${d.descanso / 60000}m comida` : 'OK')}</td></tr>`;
     }
     if (!rows) rows = '<tr><td colspan="5" class="muted">Sin fichajes</td></tr>';
     html += `
@@ -480,7 +601,9 @@ async function exportPDF() {
         <thead><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estado</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr class="tot"><td colspan="3">TOTAL${incompletos ? ` · ${incompletos} día(s) incompleto(s)` : ''}</td><td class="num">${fmtH(tot)}</td><td></td></tr></tfoot>
-      </table>`;
+      </table>
+      ${totalsTable('Totales por semana', groupTotals(days, 'semana'), 'Semana')}
+      ${totalsTable('Totales por mes', groupTotals(days, 'mes'), 'Mes')}`;
   }
   const corr = recs.filter(r => r.type === 'correccion');
   if (corr.length) {
@@ -489,7 +612,7 @@ async function exportPDF() {
       html += `<tr><td>${dayKey(r.ts)} ${hhmm(r.ts)}</td><td>${nombre(r.uid)}</td><td>${describeCorr(r)}</td><td>${r.motivo}</td></tr>`;
     html += '</tbody></table>';
   }
-  html += '<p class="legend"><b>⚠</b> día incompleto: falta una entrada o una salida. &nbsp; <b>*</b> hora introducida o corregida por el administrador (ver detalle arriba).</p>';
+  html += '<p class="legend"><b>⚠</b> día incompleto: falta una entrada o una salida. &nbsp; <b>*</b> hora introducida o corregida por el administrador. &nbsp; En invierno se restan 30 min de comida cuando solo se ficha entrada y salida.</p>';
   $('#printArea').innerHTML = html;
   window.print();
 }
@@ -520,10 +643,25 @@ function panelIntegridad() {
   };
 }
 
-/* --- Ajustes: cambiar PIN + borrar datos --- */
-function panelPin() {
+/* --- Ajustes: modo del móvil + cambiar PIN + borrar datos --- */
+async function panelPin() {
+  const ws = await getAllWorkers();
+  const cfg = (await metaGet('config')) || { modo: 'kiosco' };
   setPanel(`
     <h2>Ajustes</h2>
+    <h3>Modo de este móvil</h3>
+    <p class="muted"><b>Kiosco</b> = tarjeta NFC compartida (varios trabajadores). <b>Personal</b> = un solo
+    trabajador ficha con un botón grande, sin tarjeta (para su propio móvil).</p>
+    <div class="row">
+      <select id="modoSel">
+        <option value="kiosco">Kiosco (NFC compartido)</option>
+        <option value="personal">Personal (un trabajador)</option>
+      </select>
+      ${workerSelect('modoWorker', ws, cfg.personalUid)}
+      <button id="modoSave" class="btn primary">Guardar modo</button>
+    </div>
+    <div id="modoMsg" class="msg"></div>
+    <hr style="margin:22px 0;border:none;border-top:1px solid #ddd">
     <h3>Cambiar PIN</h3>
     <p>PIN nuevo (mínimo 4 dígitos):</p>
     <input id="pinNew" type="password" inputmode="numeric" placeholder="PIN nuevo">
@@ -537,6 +675,17 @@ function panelPin() {
     quieras guardar, expórtalos antes en <b>Exportar</b>.</p>
     <button id="resetBtn" class="btn" style="background:#c62828">🗑 Borrar todos los datos</button>
     <div id="resetMsg" class="msg"></div>`);
+  // Modo del móvil
+  $('#modoSel').value = cfg.modo || 'kiosco';
+  const syncModoUI = () => { $('#modoWorker').style.display = $('#modoSel').value === 'personal' ? '' : 'none'; };
+  syncModoUI();
+  $('#modoSel').onchange = syncModoUI;
+  $('#modoSave').onclick = async () => {
+    const modo = $('#modoSel').value;
+    if (modo === 'personal' && !$('#modoWorker').value) return $('#modoMsg').textContent = 'Elige el trabajador primero (dalo de alta en “Alta tarjeta”).';
+    await metaPut({ id: 'config', modo, personalUid: modo === 'personal' ? $('#modoWorker').value : null });
+    $('#modoMsg').textContent = 'Modo guardado ✓ (se aplica al pulsar “Salir”).';
+  };
   $('#pinSave').onclick = async () => {
     const a = $('#pinNew').value, b = $('#pinNew2').value;
     if (a.length < 4) return $('#pinMsg').textContent = 'Mínimo 4 dígitos';
@@ -545,8 +694,9 @@ function panelPin() {
     $('#pinMsg').textContent = 'PIN cambiado ✓';
   };
   $('#resetBtn').onclick = async () => {
-    const t = prompt('Esto borrará TODOS los fichajes y tarjetas.\nEscribe BORRAR (en mayúsculas) para confirmar:');
-    if (t !== 'BORRAR') return $('#resetMsg').textContent = 'Cancelado (no se borró nada).';
+    const pin = prompt('Para BORRAR todos los datos, introduce el PIN de administrador:');
+    if (pin === null) return;
+    if (!(await checkPin(pin))) return $('#resetMsg').textContent = 'PIN incorrecto. No se borró nada.';
     await resetAllData();
     $('#resetMsg').textContent = 'Datos borrados. Todo a cero ✓';
   };
@@ -566,16 +716,17 @@ async function resetAllData() {
 /* ============================ Arranque ============================ */
 (async () => {
   db = await dbp;
+  // Pide al navegador que NO borre los datos por falta de espacio (almacenamiento persistente).
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   startClock();
-  // Kiosco: intenta NFC; si necesita gesto, mostrará "Toca la pantalla".
-  await startNFC();
   $('#kiosk').addEventListener('click', e => { if (e.target.id !== 'gear' && !nfcReader) startNFC(); });
   $('#gear').addEventListener('click', e => { e.stopPropagation(); openAdminLogin(); });
+  $('#gear2').addEventListener('click', e => { e.stopPropagation(); openAdminLogin(); });
 
   // Pinpad
   document.querySelectorAll('.pinpad [data-d]').forEach(b => b.onclick = () => { if (pinBuf.length < 8) { pinBuf += b.dataset.d; drawPin(); } });
   $('#pinDel').onclick = () => { pinBuf = pinBuf.slice(0, -1); drawPin(); };
-  $('#pinCancel').onclick = () => show('#kiosk');
+  $('#pinCancel').onclick = () => applyMode();
   $('#pinOk').onclick = () => pinCb && pinCb(pinBuf);
 
   // Menú admin
@@ -588,6 +739,7 @@ async function resetAllData() {
   $('#navPin').onclick = panelPin;
   $('#navSalir').onclick = exitAdmin;
 
+  await applyMode();  // muestra kiosco (con NFC) o modo personal, según config
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 

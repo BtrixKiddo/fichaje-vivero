@@ -85,15 +85,20 @@ El sistema alterna entrada/salida solo, así que basta con **acercar la tarjeta 
   1. Al **entrar** (6:00) → verde.
   2. Al **salir** (14:00) → naranja.
 - **Resto del año (desde septiembre)** — jornada partida 7:30–13:00 y 13:30–16:00, con media
-  hora para comer. Se ficha **4 veces**:
+  hora para comer. Basta con fichar **2 veces**:
   1. Al **entrar** (7:30) → verde.
-  2. Al **irse a comer** (13:00) → naranja.
-  3. Al **volver de comer** (13:30) → verde.
-  4. Al **salir** (16:00) → naranja.
+  2. Al **salir** (16:00) → naranja.
 
-La media hora de la comida **no cuenta** como trabajada (el sistema resta el hueco entre la
-salida y la siguiente entrada). Si alguien se olvida de fichar alguna de las 4, ese día sale
-marcado como **incompleto** y se arregla en *Corrección*.
+  El sistema **resta solo los 30 min de la comida** automáticamente (lo verás en el resumen
+  como *"OK (−30 min comida)"*). No hace falta fichar al ir a comer.
+
+  Si prefieren fichar también la comida (entrada–salida–entrada–salida, **4 veces**), también
+  vale: en ese caso se cuentan las horas exactas y no se resta nada extra. Da igual 2 o 4:
+  el resultado sale bien.
+
+> La media hora de comida **no cuenta** como trabajada. En verano no se resta nada (jornada
+> seguida). El descanso solo se resta si es jornada larga; una media jornada (solo la mañana)
+> no pierde esos 30 min.
 
 ---
 
@@ -107,14 +112,42 @@ Engranaje ⚙️ → PIN (por defecto **1234**). Menú:
   **motivo** (añadir un fichaje olvidado, anular uno erróneo o cambiar la hora). Las horas
   puestas a mano por el administrador se marcan con un **\*** en los listados. Queda todo en
   el log de auditoría.
-- **Horas**: horas por día y **totales** por trabajador y periodo (*Esta semana* / *Este mes*
-  / rango de fechas). Los días **incompletos** (falta entrada o salida) salen en **rojo**.
+- **Horas**: totales por trabajador con vista **Día / Semana / Mes** (selector arriba) y
+  atajos *Esta semana / Este mes / Este año* o un rango de fechas. Muestra el TOTAL del periodo
+  y marca en **rojo** las semanas/meses con algún día incompleto. El CSV exportado incluye
+  además secciones **TOTALES POR SEMANA** y **TOTALES POR MES**.
 - **Consulta**: ver los fichajes de un trabajador concreto.
 - **Exportar**: genera el archivo (ver punto 7).
 - **Integridad**: comprueba que **nadie ha manipulado** los fichajes (cadena de hashes).
-- **Ajustes**: cambiar el **PIN** (cámbialo el primer día, el 1234 es solo inicial) y
-  **Borrar todos los datos** (para empezar de cero con las tarjetas reales; pide confirmación
-  y no se puede deshacer).
+- **Ajustes**: elegir el **modo del móvil** (Kiosco / Personal, ver abajo), cambiar el **PIN**
+  (cámbialo el primer día, el 1234 es solo inicial) y **Borrar todos los datos** (para empezar
+  de cero con las tarjetas reales; **pide el PIN** y no se puede deshacer). Úsalo solo para
+  datos de prueba: con datos reales, no borres y guarda backups (la ley pide conservar 4 años).
+
+### Regla de comida por trabajador
+
+Al dar de alta o editar a un trabajador puedes fijar **su regla de comida**: *Estándar*
+(resta 30 min en invierno), *Restar siempre*, o *No restar*, y los minutos. Así el trabajador
+remoto (u otro) puede tener una regla distinta del resto.
+
+---
+
+## 6b. Modo personal (un trabajador a distancia)
+
+Es **la misma app**, pero un móvil se puede poner en **modo personal** para un solo trabajador
+(por ejemplo, uno con horario y sitio distintos, que ficha desde su propio móvil sin tarjeta).
+
+Cómo activarlo (en el móvil de ese trabajador):
+1. Instala la PWA igual que el kiosco.
+2. Entra en **Admin** (PIN) → **Alta tarjeta**: da de alta a ese trabajador (nombre + foto, y
+   su **regla de comida**). El "UID" puede ser cualquier texto único, p. ej. su nombre.
+3. **Admin → Ajustes → Modo de este móvil → Personal**, elige al trabajador y **Guardar modo**.
+4. Pulsa **Salir**: la pantalla pasa a mostrar **su foto + un botón grande ENTRADA/SALIDA**
+   (verde/naranja, alterna solo). Sin tarjeta, sin NFC.
+
+Ese móvil guarda **su propio registro** (append-only + hash, igual de válido). Él exporta **su
+propio CSV/PDF** desde su Admin. Es un registro aparte del kiosco (juntarlos en un solo Excel
+sería una mejora futura). Para volver al modo kiosco: Ajustes → Modo → Kiosco → Salir.
 
 ---
 

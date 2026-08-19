@@ -35,13 +35,27 @@
     <div id="tapHint" class="hidden">Toca la pantalla para activar</div>
     <div id="nfcWarn" class="hidden">Este navegador no soporta NFC.<br>Usa Chrome en Android.</div>
   </div>
-  <div id="result" class="hidden">
-    <img id="rPhoto" alt="">
-    <div id="rName"></div>
-    <div id="rMsg"></div>
-    <div id="rTime"></div>
+</section>
+
+<!-- ===== MODO PERSONAL (móvil de un solo trabajador) ===== -->
+<section id="personal" class="screen">
+  <button id="gear2" title="Administrador">&#9881;</button>
+  <div id="pInner">
+    <div id="pClock">--:--</div>
+    <div id="pDate"></div>
+    <img id="pPhoto" alt="">
+    <div id="pName"></div>
+    <button id="pBtn" class="bigbtn">FICHAR</button>
   </div>
 </section>
+
+<!-- Overlay de resultado (común a kiosco y personal) -->
+<div id="result" class="hidden">
+  <img id="rPhoto" alt="">
+  <div id="rName"></div>
+  <div id="rMsg"></div>
+  <div id="rTime"></div>
+</div>
 
 <!-- ===== LOGIN PIN ===== -->
 <section id="adminLogin" class="screen">

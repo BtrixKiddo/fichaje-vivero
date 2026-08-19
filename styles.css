@@ -27,6 +27,18 @@ html,body{margin:0;height:100%;font-family:system-ui,Arial,sans-serif;background
 #rMsg{font-size:min(8vw,40px);margin-top:8px}
 #rTime{font-size:min(14vw,80px);font-weight:800;margin-top:8px}
 
+/* ===== MODO PERSONAL ===== */
+#personal{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#14514a 0%,#0e2a4a 55%,#0a1c38 100%)}
+#gear2{position:absolute;top:8px;right:8px;background:transparent;border:none;font-size:26px;opacity:.25;color:#fff}
+#pInner{text-align:center;color:#fff;padding:20px}
+#pClock{font-size:min(14vw,80px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+#pDate{font-size:min(4.5vw,22px);opacity:.85;margin:2px 0 14px;text-transform:capitalize}
+#pPhoto{width:min(48vw,240px);height:min(48vw,240px);object-fit:cover;border-radius:24px;border:5px solid #fff;background:#fff}
+#pName{font-size:min(9vw,44px);font-weight:800;margin:12px 0 18px}
+.bigbtn{border:none;border-radius:20px;color:#fff;font-size:min(9vw,40px);font-weight:800;padding:26px 34px;width:min(84vw,460px)}
+.bigbtn.entrada{background:#1b8a3a}
+.bigbtn.salida{background:#e07b00}
+
 /* ===== PIN ===== */
 #adminLogin{background:#0d3b1e;padding:16px;text-align:center}
 #pinDots{font-size:40px;letter-spacing:8px;margin:16px;min-height:44px}
@@ -72,6 +84,7 @@ tr.tot{font-weight:800;background:#eef}
   #printArea h1{font-size:20px;margin:0 0 2px}
   #printArea .pdf-head p{font-size:11px;color:#555;margin:2px 0}
   #printArea h2{font-size:15px;margin:16px 0 4px;color:#0b5e2a;page-break-after:avoid}
+  #printArea .subt{font-size:12px;font-weight:700;color:#0b5e2a;margin:8px 0 2px}
   #printArea table{border-collapse:collapse;width:100%;margin-bottom:6px;font-size:12px}
   #printArea tr{page-break-inside:avoid}
   #printArea th{background:#1b8a3a;color:#fff;padding:5px 6px;text-align:left}
