@@ -2,10 +2,13 @@
 html,body{margin:0;height:100%;font-family:system-ui,Arial,sans-serif;background:#0d3b1e;color:#fff}
 .screen{display:none;min-height:100vh}
 .screen.active{display:block}
+/* kiosco y personal se centran con flex, pero SOLO cuando están activos
+   (el selector por ID va con .active para no ganarle a .screen{display:none}) */
+#kiosk.active,#personal.active{display:flex}
 .hidden{display:none!important}
 
 /* ===== KIOSCO ===== */
-#kiosk{position:relative;height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#14514a 0%,#0e2a4a 55%,#0a1c38 100%)}
+#kiosk{position:relative;height:100vh;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#14514a 0%,#0e2a4a 55%,#0a1c38 100%)}
 #gear{position:absolute;top:8px;right:8px;background:transparent;border:none;font-size:26px;opacity:.25;color:#fff}
 #rest{text-align:center;padding:20px}
 #clock{font-size:min(18vw,108px);font-weight:800;line-height:1;letter-spacing:2px;font-variant-numeric:tabular-nums}
@@ -28,7 +31,7 @@ html,body{margin:0;height:100%;font-family:system-ui,Arial,sans-serif;background
 #rTime{font-size:min(14vw,80px);font-weight:800;margin-top:8px}
 
 /* ===== MODO PERSONAL ===== */
-#personal{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#14514a 0%,#0e2a4a 55%,#0a1c38 100%)}
+#personal{position:relative;min-height:100vh;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#14514a 0%,#0e2a4a 55%,#0a1c38 100%)}
 #gear2{position:absolute;top:8px;right:8px;background:transparent;border:none;font-size:26px;opacity:.25;color:#fff}
 #pInner{display:flex;flex-direction:column;align-items:center;text-align:center;color:#fff;padding:20px;width:100%}
 #pClock{font-size:min(14vw,80px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
