@@ -114,8 +114,8 @@ Engranaje ⚙️ → PIN (por defecto **1234**). Menú:
   el log de auditoría.
 - **Horas**: totales por trabajador con vista **Día / Semana / Mes** (selector arriba) y
   atajos *Esta semana / Este mes / Este año* o un rango de fechas. Muestra el TOTAL del periodo
-  y marca en **rojo** las semanas/meses con algún día incompleto. El CSV exportado incluye
-  además secciones **TOTALES POR SEMANA** y **TOTALES POR MES**.
+  y marca en **rojo** las semanas/meses con algún día incompleto. El Excel exportado trae hojas
+  aparte de **Semanas** y **Meses**.
 - **Consulta**: ver los fichajes de un trabajador concreto.
 - **Exportar**: genera el archivo (ver punto 7).
 - **Integridad**: comprueba que **nadie ha manipulado** los fichajes (cadena de hashes).
@@ -146,7 +146,7 @@ Cómo activarlo (en el móvil de ese trabajador):
    (verde/naranja, alterna solo). Sin tarjeta, sin NFC.
 
 Ese móvil guarda **su propio registro** (append-only + hash, igual de válido). Él exporta **su
-propio CSV/PDF** desde su Admin. Es un registro aparte del kiosco (juntarlos en un solo Excel
+propio Excel/PDF** desde su Admin. Es un registro aparte del kiosco (juntarlos en un solo Excel
 sería una mejora futura). Para volver al modo kiosco: Ajustes → Modo → Kiosco → Salir.
 
 ---
@@ -155,8 +155,9 @@ sería una mejora futura). Para volver al modo kiosco: Ajustes → Modo → Kios
 
 En **Administrador → Exportar**:
 
-- **Exportar CSV**: crea un archivo `fichajes_AAAA-MM-DD.csv` con **todos los fichajes + el
-  log de auditoría + el resumen de horas**. Se abre con Excel (usa `;` como separador).
+- **Exportar Excel (.xlsx)**: crea `fichajes_AAAA-MM-DD.xlsx` con **una hoja por tabla**
+  (Resumen, Semanas, Meses, Detalle y Correcciones). Se abre directamente en **Excel y Google
+  Sheets**, con las horas como números (se pueden sumar).
 - **Exportar PDF**: abre la vista de impresión → elige **"Guardar como PDF"**.
 
 El archivo queda en la carpeta **Descargas** del móvil. Para pasarlo al USB:

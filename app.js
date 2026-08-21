@@ -554,62 +554,107 @@ async function panelConsulta() {
   $('#cVer').onclick = go; $('#cGroup').onchange = go; $('#cW').onchange = go; go();
 }
 
-/* --- Exportar --- */
-const csvCell = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-const csvRow = arr => arr.map(csvCell).join(';');
-const numES = ms => msToH(ms).toFixed(2).replace('.', ',');
+/* --- Exportar: genera un .xlsx de verdad (una hoja por tabla, números como números) --- */
+// Generador XLSX sin librerías: ZIP "stored" (sin comprimir) + XML mínimo. Validado con SheetJS.
+const _CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = _CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const u16 = n => [n & 255, (n >> 8) & 255];
+  const u32 = n => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255];
+  const parts = [], central = []; let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = f.data, crc = crc32(data), size = data.length;
+    const local = [0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(size), ...u32(size), ...u16(name.length), ...u16(0)];
+    parts.push(Uint8Array.from(local), name, data);
+    central.push({ name, crc, size, offset });
+    offset += local.length + name.length + size;
+  }
+  const cdStart = offset, cdParts = [];
+  for (const c of central) {
+    const h = [0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(c.crc), ...u32(c.size), ...u32(c.size), ...u16(c.name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(c.offset)];
+    cdParts.push(Uint8Array.from(h), c.name);
+    offset += h.length + c.name.length;
+  }
+  const cdSize = offset - cdStart;
+  const end = Uint8Array.from([0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(central.length), ...u16(central.length), ...u32(cdSize), ...u32(cdStart), ...u16(0)]);
+  const all = [...parts, ...cdParts, end];
+  const out = new Uint8Array(all.reduce((s, a) => s + a.length, 0));
+  let p = 0; for (const a of all) { out.set(a, p); p += a.length; }
+  return out;
+}
+const escXml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const colLetter = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; } return s; };
+function sheetXml(rows) {
+  let x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+  rows.forEach((row, ri) => {
+    x += `<row r="${ri + 1}">`;
+    row.forEach((val, ci) => {
+      if (val === '' || val === null || val === undefined) return;
+      const ref = colLetter(ci + 1) + (ri + 1);
+      if (typeof val === 'number' && isFinite(val)) x += `<c r="${ref}"><v>${val}</v></c>`;
+      else x += `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escXml(val)}</t></is></c>`;
+    });
+    x += '</row>';
+  });
+  return x + '</sheetData></worksheet>';
+}
+function buildXlsx(sheets) {
+  const enc = new TextEncoder(), files = [];
+  const add = (name, str) => files.push({ name, data: enc.encode(str) });
+  let ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>';
+  sheets.forEach((s, i) => ct += `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
+  add('[Content_Types].xml', ct + '</Types>');
+  add('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+  let wb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>';
+  sheets.forEach((s, i) => wb += `<sheet name="${escXml(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`);
+  add('xl/workbook.xml', wb + '</sheets></workbook>');
+  let rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+  sheets.forEach((s, i) => rels += `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`);
+  add('xl/_rels/workbook.xml.rels', rels + '</Relationships>');
+  sheets.forEach((s, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows)));
+  return zipStore(files);
+}
 
-async function exportCSV() {
+const numH = ms => Math.round(msToH(ms) * 100) / 100; // horas en decimal (número), p. ej. 7.5
+
+async function exportXLSX() {
   const recs = (await getAllRecords()).sort((a, b) => a.seq - b.seq);
   const workers = await getAllWorkers();
   const nombre = uid => (workers.find(w => w.uid === uid) || {}).nombre || uid;
-  const L = [];
-  L.push('REGISTRO DE JORNADA - VIVERO (art. 34.9 del Estatuto de los Trabajadores)');
-  L.push('Generado;' + new Date().toLocaleString('es-ES'));
-  L.push('Nota;Un * detras de una hora significa que la puso el administrador a mano');
 
-  L.push('', '=== RESUMEN DE HORAS ===');
-  L.push(csvRow(['Trabajador', 'Fecha', 'Entrada', 'Salida', 'Horas', 'Estado']));
+  const resumen = [['Trabajador', 'Fecha', 'Entrada', 'Salida', 'Horas', 'Estado']];
   for (const w of workers) {
     let tot = 0;
-    for (const d of computeDays(recs, w.uid, ruleFor(w))) {
-      tot += d.worked;
-      const c = dayCols(d);
-      L.push(csvRow([w.nombre, d.date, c.ent, c.sal, numES(d.worked), estadoTxt(d)]));
-    }
-    L.push(csvRow([w.nombre, '', '', 'TOTAL', numES(tot), '']));
-    L.push('');
+    for (const d of computeDays(recs, w.uid, ruleFor(w))) { tot += d.worked; const c = dayCols(d); resumen.push([w.nombre, d.date, c.ent, c.sal, numH(d.worked), estadoTxt(d)]); }
+    resumen.push([w.nombre, '', '', 'TOTAL', numH(tot), '']);
   }
 
-  L.push('=== TOTALES POR SEMANA ===');
-  L.push(csvRow(['Trabajador', 'Semana', 'Días', 'Horas', 'Incompletos']));
-  for (const w of workers) for (const g of groupTotals(computeDays(recs, w.uid, ruleFor(w)), 'semana'))
-    L.push(csvRow([w.nombre, g.label, g.dias, numES(g.worked), g.inc || '']));
+  const semanas = [['Trabajador', 'Semana', 'Días', 'Horas']];
+  const meses = [['Trabajador', 'Mes', 'Días', 'Horas']];
+  for (const w of workers) {
+    const days = computeDays(recs, w.uid, ruleFor(w));
+    for (const g of groupTotals(days, 'semana')) semanas.push([w.nombre, g.label, g.dias, numH(g.worked)]);
+    for (const g of groupTotals(days, 'mes')) meses.push([w.nombre, g.label, g.dias, numH(g.worked)]);
+  }
 
-  L.push('', '=== TOTALES POR MES ===');
-  L.push(csvRow(['Trabajador', 'Mes', 'Días', 'Horas', 'Incompletos']));
-  for (const w of workers) for (const g of groupTotals(computeDays(recs, w.uid, ruleFor(w)), 'mes'))
-    L.push(csvRow([w.nombre, g.label, g.dias, numES(g.worked), g.inc || '']));
-
-  L.push('', '=== DETALLE DE FICHAJES (registro inalterable, encadenado por hash) ===');
-  L.push(csvRow(['Seq', 'Tipo registro', 'Trabajador', 'Marca', 'Fecha', 'Hora', 'Origen', 'Motivo', 'Hash', 'Hash anterior']));
+  const detalle = [['Seq', 'Tipo', 'Trabajador', 'Marca', 'Fecha', 'Hora', 'Origen', 'Motivo', 'Hash', 'Hash anterior']];
   for (const r of recs) {
-    if (r.type === 'fichaje')
-      L.push(csvRow([r.seq, 'fichaje', nombre(r.uid), r.tipo, dayKey(r.ts), hhmm(r.ts), 'kiosco', '', r.hash, r.prevHash]));
-    else {
-      const ts = r.tsCorregido != null ? r.tsCorregido : r.ts;
-      L.push(csvRow([r.seq, 'corrección', nombre(r.uid), r.tipoCorregido || '', dayKey(ts), hhmm(ts), 'admin', r.motivo, r.hash, r.prevHash]));
-    }
+    if (r.type === 'fichaje') detalle.push([r.seq, 'fichaje', nombre(r.uid), r.tipo, dayKey(r.ts), hhmm(r.ts), 'kiosco', '', r.hash, r.prevHash]);
+    else { const ts = r.tsCorregido != null ? r.tsCorregido : r.ts; detalle.push([r.seq, 'corrección', nombre(r.uid), r.tipoCorregido || '', dayKey(ts), hhmm(ts), 'admin', r.motivo || '', r.hash, r.prevHash]); }
   }
 
-  L.push('', '=== CORRECCIONES DEL ADMINISTRADOR (log de auditoría) ===');
-  L.push(csvRow(['Seq', 'Fecha corrección', 'Hora', 'Trabajador', 'Acción', 'Motivo']));
-  const corr = recs.filter(r => r.type === 'correccion');
-  if (!corr.length) L.push('(ninguna)');
-  for (const r of corr)
-    L.push(csvRow([r.seq, dayKey(r.ts), hhmm(r.ts), nombre(r.uid), describeCorr(r), r.motivo]));
+  const corr = [['Seq', 'Fecha', 'Hora', 'Trabajador', 'Acción', 'Motivo']];
+  for (const r of recs.filter(r => r.type === 'correccion')) corr.push([r.seq, dayKey(r.ts), hhmm(r.ts), nombre(r.uid), describeCorr(r), r.motivo || '']);
 
-  download(`fichajes_${dayKey(Date.now())}.csv`, 'text/csv;charset=utf-8', '﻿' + L.join('\r\n'));
+  const bytes = buildXlsx([
+    { name: 'Resumen', rows: resumen },
+    { name: 'Semanas', rows: semanas },
+    { name: 'Meses', rows: meses },
+    { name: 'Detalle', rows: detalle },
+    { name: 'Correcciones', rows: corr },
+  ]);
+  download(`fichajes_${dayKey(Date.now())}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
 }
 
 async function exportPDF() {
@@ -661,11 +706,12 @@ function panelExportar() {
   setPanel(`
     <h2>Exportar</h2>
     <p>El archivo se guarda en la carpeta <b>Descargas</b> del móvil. Luego cópialo al USB.</p>
+    <p class="muted">El Excel trae una hoja por tabla: Resumen, Semanas, Meses, Detalle y Correcciones. Se abre bien en Excel y en Google Sheets.</p>
     <div class="row">
-      <button id="expCsv" class="btn primary">Exportar CSV</button>
+      <button id="expXlsx" class="btn primary">Exportar Excel (.xlsx)</button>
       <button id="expPdf" class="btn">Exportar PDF (imprimir → Guardar como PDF)</button></div>
     <div id="expMsg" class="msg"></div>`);
-  $('#expCsv').onclick = async () => { await exportCSV(); $('#expMsg').textContent = 'CSV generado ✓ (mira en Descargas)'; };
+  $('#expXlsx').onclick = async () => { try { await exportXLSX(); $('#expMsg').textContent = 'Excel generado ✓ (mira en Descargas)'; } catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; } };
   $('#expPdf').onclick = exportPDF;
 }
 
