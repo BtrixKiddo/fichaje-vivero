@@ -151,6 +151,13 @@ function describeCorr(c) {
   if (c.op === 'modificar') return `Cambió la hora del #${c.targetSeq} a las ${hhmm(c.tsCorregido)}`;
   return c.op;
 }
+// ¿Añadir (tipo, ts) mantiene el día alternando entrada→salida→entrada→salida…?
+function secuenciaValida(dayPunches, tipo, ts) {
+  const seq = [...dayPunches.map(p => ({ tipo: p.tipo, ts: p.ts })), { tipo, ts }].sort((a, b) => a.ts - b.ts);
+  let esperado = 'entrada';
+  for (const p of seq) { if (p.tipo !== esperado) return false; esperado = esperado === 'entrada' ? 'salida' : 'entrada'; }
+  return true;
+}
 
 function thisWeek() { const d = new Date(); const off = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - off); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return [iso(mon), iso(sun)]; }
 function thisMonth() { const d = new Date(); return [iso(new Date(d.getFullYear(), d.getMonth(), 1)), iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; }
@@ -184,6 +191,21 @@ function download(name, mime, data) {
   a.href = URL.createObjectURL(new Blob([data], { type: mime }));
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+// Abre el menú de compartir del móvil (Gmail, WhatsApp, guardar…). Si no se puede, descarga.
+async function shareOrDownload(name, mime, data) {
+  try {
+    const file = new File([data], name, { type: mime });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: name });
+      return 'compartido';
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return 'cancelado'; // el usuario cerró el menú
+    // cualquier otro fallo -> se descarga
+  }
+  download(name, mime, data);
+  return 'descargado';
 }
 const normUid = s => String(s || '').toLowerCase();
 function workerSelect(id, ws, sel) { return `<select id="${id}">${ws.map(w => `<option value="${w.uid}" ${w.uid === sel ? 'selected' : ''}>${w.nombre}</option>`).join('')}</select>`; }
@@ -427,6 +449,14 @@ async function panelCorreccion(preUid, preDate) {
     const uid = $('#corrW').value, date = $('#corrD').value, t = $('#addTime').value, mot = $('#addMot').value.trim(), tipo = $('#addTipo').value;
     if (!uid || !date || !t || !mot) { $('#corrMsg').textContent = 'Faltan datos (el motivo es obligatorio)'; return; }
     const ts = new Date(`${date}T${t}`).getTime();
+    // El día debe quedar entrada → salida → entrada → salida… (una salida por cada entrada).
+    const dia = effectivePunches(await getAllRecords(), uid).filter(p => dayKey(p.ts) === date);
+    if (!secuenciaValida(dia, tipo, ts)) {
+      $('#corrMsg').textContent = tipo === 'salida'
+        ? 'No se puede: quedaría una SALIDA sin su ENTRADA (cada entrada lleva como mucho una salida).'
+        : 'No se puede: quedarían dos ENTRADAS seguidas. Primero la salida de la anterior.';
+      return;
+    }
     await appendRecord({ type: 'correccion', op: 'agregar', uid, tipoCorregido: tipo, tsCorregido: ts, motivo: mot, ts: Date.now() });
     $('#corrMsg').textContent = 'Corrección añadida ✓'; renderCorrDay();
   };
@@ -654,7 +684,7 @@ async function exportXLSX() {
     { name: 'Detalle', rows: detalle },
     { name: 'Correcciones', rows: corr },
   ]);
-  download(`fichajes_${dayKey(Date.now())}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
+  return shareOrDownload(`fichajes_${dayKey(Date.now())}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
 }
 
 async function exportPDF() {
@@ -705,13 +735,21 @@ async function exportPDF() {
 function panelExportar() {
   setPanel(`
     <h2>Exportar</h2>
-    <p>El archivo se guarda en la carpeta <b>Descargas</b> del móvil. Luego cópialo al USB.</p>
+    <p>Al exportar se abre el menú del móvil para <b>enviar el archivo</b> (Gmail, WhatsApp…) o guardarlo. Si el aparato no lo permite, se descarga en <b>Descargas</b>.</p>
     <p class="muted">El Excel trae una hoja por tabla: Resumen, Semanas, Meses, Detalle y Correcciones. Se abre bien en Excel y en Google Sheets.</p>
     <div class="row">
       <button id="expXlsx" class="btn primary">Exportar Excel (.xlsx)</button>
       <button id="expPdf" class="btn">Exportar PDF (imprimir → Guardar como PDF)</button></div>
     <div id="expMsg" class="msg"></div>`);
-  $('#expXlsx').onclick = async () => { try { await exportXLSX(); $('#expMsg').textContent = 'Excel generado ✓ (mira en Descargas)'; } catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; } };
+  $('#expXlsx').onclick = async () => {
+    try {
+      const r = await exportXLSX();
+      $('#expMsg').textContent = r === 'compartido' ? 'Enviado/guardado ✓'
+        : r === 'descargado' ? 'Excel generado ✓ (en Descargas)'
+        : r === 'cancelado' ? 'Cancelado.'
+        : 'Excel generado ✓';
+    } catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; }
+  };
   $('#expPdf').onclick = exportPDF;
 }
 
