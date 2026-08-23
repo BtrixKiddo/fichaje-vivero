@@ -1,5 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
+const APP_VERSION = 'v17'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -193,19 +194,20 @@ function download(name, mime, data) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 // Abre el menú de compartir del móvil (Gmail, WhatsApp, guardar…). Si no se puede, descarga.
+// Devuelve un texto explicando qué pasó (para diagnóstico en pantalla).
 async function shareOrDownload(name, mime, data) {
+  let file = null;
+  try { file = new File([data], name, { type: mime }); } catch (_) {}
+  if (!navigator.share) { download(name, mime, data); return 'Descargado (este navegador no tiene compartir)'; }
+  if (file && navigator.canShare && !navigator.canShare({ files: [file] })) { download(name, mime, data); return 'Descargado (el móvil no permite compartir este archivo)'; }
   try {
-    const file = new File([data], name, { type: mime });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: name });
-      return 'compartido';
-    }
+    await navigator.share({ files: [file], title: name });
+    return 'Enviado / guardado ✓';
   } catch (e) {
-    if (e && e.name === 'AbortError') return 'cancelado'; // el usuario cerró el menú
-    // cualquier otro fallo -> se descarga
+    if (e && e.name === 'AbortError') return 'Cancelado';
+    download(name, mime, data);
+    return 'Descargado (compartir falló: ' + ((e && e.name) || '?') + ')';
   }
-  download(name, mime, data);
-  return 'descargado';
 }
 const normUid = s => String(s || '').toLowerCase();
 function workerSelect(id, ws, sel) { return `<select id="${id}">${ws.map(w => `<option value="${w.uid}" ${w.uid === sel ? 'selected' : ''}>${w.nombre}</option>`).join('')}</select>`; }
@@ -740,15 +742,11 @@ function panelExportar() {
     <div class="row">
       <button id="expXlsx" class="btn primary">Exportar Excel (.xlsx)</button>
       <button id="expPdf" class="btn">Exportar PDF (imprimir → Guardar como PDF)</button></div>
-    <div id="expMsg" class="msg"></div>`);
+    <div id="expMsg" class="msg"></div>
+    <p class="muted" style="margin-top:14px">App ${APP_VERSION}</p>`);
   $('#expXlsx').onclick = async () => {
-    try {
-      const r = await exportXLSX();
-      $('#expMsg').textContent = r === 'compartido' ? 'Enviado/guardado ✓'
-        : r === 'descargado' ? 'Excel generado ✓ (en Descargas)'
-        : r === 'cancelado' ? 'Cancelado.'
-        : 'Excel generado ✓';
-    } catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; }
+    try { $('#expMsg').textContent = await exportXLSX(); }
+    catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; }
   };
   $('#expPdf').onclick = exportPDF;
 }
