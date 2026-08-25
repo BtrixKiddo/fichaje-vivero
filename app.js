@@ -1,6 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
-const APP_VERSION = 'v17'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
+const APP_VERSION = 'v19'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -100,7 +100,7 @@ const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const msToH = ms => ms / 3600000;
 const fmtH = ms => { const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000); return `${h}h ${pad(m)}m`; };
 
-// Regla de pausa de comida por trabajador (por defecto: verano jul/ago sin pausa, resto −30 min).
+// Regla de pausa de comida por trabajador (por defecto: −30 min salvo jun/jul/ago, que no restan).
 function ruleFor(w) {
   const p = (w && w.pausa) || {};
   return { min: p.min != null ? p.min : 30, cuando: p.cuando || 'invierno', umbralH: p.umbralH != null ? p.umbralH : 6 };
@@ -122,7 +122,8 @@ function computeDays(records, uid, rule) {
     // Si solo hay UN tramo (no ficharon la comida) y es jornada larga, se resta la pausa.
     // Si fichan 4 veces, ya queda excluida por el hueco y no se resta nada.
     const mes = +date.split('-')[1];
-    const aplica = rule.cuando === 'siempre' ? true : (rule.cuando === 'invierno' ? !(mes === 7 || mes === 8) : false);
+    // 'invierno' (estándar) = restar salvo verano; verano = junio, julio y agosto (meses 6, 7 y 8).
+    const aplica = rule.cuando === 'siempre' ? true : (rule.cuando === 'invierno' ? !(mes >= 6 && mes <= 8) : false);
     let descanso = 0;
     // ponytail: umbral en horas para no restar comida en una media jornada (p. ej. solo la mañana).
     if (aplica && rule.min > 0 && !incompleto && pares === 1 && worked >= rule.umbralH * 3600000) {
@@ -382,9 +383,9 @@ async function panelAlta() {
     <p>Regla de comida (para el cálculo de horas):</p>
     <div class="row">
       <select id="altaPausaCuando">
-        <option value="invierno">Estándar (restar en invierno)</option>
-        <option value="siempre">Restar siempre</option>
-        <option value="nunca">No restar</option>
+        <option value="invierno">Estándar: restar salvo jun, jul y ago</option>
+        <option value="siempre">Restar siempre (todo el año)</option>
+        <option value="nunca">No restar nunca</option>
       </select>
       <input id="altaPausaMin" type="number" min="0" value="30" style="width:80px"> min
     </div>
@@ -411,7 +412,7 @@ function showAltaPrev(data) { const p = $('#altaPrev'); if (data) { p.src = data
 async function renderAltaLista() {
   const ws = await getAllWorkers();
   $('#altaLista').innerHTML = ws.length
-    ? ws.map(w => `<div class="wrow"><img src="${w.foto || ''}" class="mini">${w.nombre} <span class="muted">${w.uid}</span> <button class="btn sm" data-edit="${w.uid}">Editar</button></div>`).join('')
+    ? ws.map(w => `<div class="wrow">${w.foto ? `<img src="${w.foto}" class="mini">` : '<span class="mini mini-ph">👤</span>'}${w.nombre} <span class="muted">${w.uid}</span> <button class="btn sm" data-edit="${w.uid}">Editar</button></div>`).join('')
     : '<p class="muted">Ninguno todavía.</p>';
   $('#altaLista').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editWorker(b.dataset.edit));
 }
@@ -447,6 +448,8 @@ async function panelCorreccion(preUid, preDate) {
       <button id="addBtn" class="btn">Añadir</button></div>
     <div id="corrMsg" class="msg"></div>`);
   $('#corrVer').onclick = renderCorrDay;
+  $('#corrW').onchange = renderCorrDay;   // al cambiar de trabajador se ve su día automáticamente
+  $('#corrD').onchange = renderCorrDay;   // idem al cambiar la fecha
   $('#addBtn').onclick = async () => {
     const uid = $('#corrW').value, date = $('#corrD').value, t = $('#addTime').value, mot = $('#addMot').value.trim(), tipo = $('#addTipo').value;
     if (!uid || !date || !t || !mot) { $('#corrMsg').textContent = 'Faltan datos (el motivo es obligatorio)'; return; }
@@ -508,9 +511,12 @@ async function panelIncompletos() {
   }).join('');
   setPanel(`
     <h2>Días incompletos</h2>
-    <p class="muted">Días con falta de entrada o salida. Pulsa <b>Corregir</b> para arreglarlos.</p>
+    <p class="muted">Un día está <b>incompleto</b> cuando falta fichar la <b>entrada</b> o la <b>salida</b>
+    (queda un número impar de marcas), así que ese día no cuenta bien las horas. Pulsa <b>Corregir</b>
+    para añadir lo que falta. <br>La columna <b>Marcas</b> muestra lo que hay: <b>E</b> = entrada, <b>S</b> = salida.</p>
     ${items.length
-      ? `<div class="scrollx"><table class="grid"><tr><th>Trabajador</th><th>Fecha</th><th>Marcas</th><th></th></tr>${rows}</table></div>`
+      ? `<div class="scrollx"><table class="grid"><tr><th>Trabajador</th><th>Fecha</th><th>Marcas</th><th></th></tr>${rows}</table></div>
+         <p class="leyenda">El día de hoy no aparece: quien está fichado y aún no ha salido no es un error.</p>`
       : '<p class="msg big">✅ No hay días incompletos.</p>'}`);
   document.querySelectorAll('#adminBody [data-uid]').forEach(b => b.onclick = () => panelCorreccion(b.dataset.uid, b.dataset.date));
 }
@@ -544,7 +550,7 @@ async function renderHoursTable(container, from, to, onlyUid, group = 'dia') {
       html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
     }
   }
-  html += '<p class="leyenda">⚠ = día/periodo con algún fichaje incompleto &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador &nbsp;·&nbsp; en invierno se resta la comida si solo se ficha entrada y salida</p>';
+  html += '<p class="leyenda">⚠ = día/periodo con algún fichaje incompleto &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador &nbsp;·&nbsp; se resta la comida (30 min) salvo jun–ago, si solo se ficha entrada y salida</p>';
   container.innerHTML = html || '<p class="muted">No hay trabajadores.</p>';
 }
 async function panelHoras() {
@@ -730,7 +736,7 @@ async function exportPDF() {
       html += `<tr><td>${dayKey(r.ts)} ${hhmm(r.ts)}</td><td>${nombre(r.uid)}</td><td>${describeCorr(r)}</td><td>${r.motivo}</td></tr>`;
     html += '</tbody></table>';
   }
-  html += '<p class="legend"><b>⚠</b> día incompleto: falta una entrada o una salida. &nbsp; <b>*</b> hora introducida o corregida por el administrador. &nbsp; En invierno se restan 30 min de comida cuando solo se ficha entrada y salida.</p>';
+  html += '<p class="legend"><b>⚠</b> día incompleto: falta una entrada o una salida. &nbsp; <b>*</b> hora introducida o corregida por el administrador. &nbsp; Se restan 30 min de comida (salvo junio, julio y agosto) cuando solo se ficha entrada y salida.</p>';
   $('#printArea').innerHTML = html;
   window.print();
 }

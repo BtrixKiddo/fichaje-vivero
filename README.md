@@ -81,10 +81,10 @@ Para cambiar la foto o el nombre, vuelve a leer la misma tarjeta y guarda de nue
 
 El sistema alterna entrada/salida solo, así que basta con **acercar la tarjeta en cada momento**:
 
-- **Verano (julio y agosto)** — jornada seguida 6:00 a 14:00. Se ficha **2 veces**:
+- **Verano (junio, julio y agosto)** — jornada seguida 6:00 a 14:00. Se ficha **2 veces**:
   1. Al **entrar** (6:00) → verde.
   2. Al **salir** (14:00) → naranja.
-- **Resto del año (desde septiembre)** — jornada partida 7:30–13:00 y 13:30–16:00, con media
+- **Resto del año (de septiembre a mayo)** — jornada partida 7:30–13:00 y 13:30–16:00, con media
   hora para comer. Basta con fichar **2 veces**:
   1. Al **entrar** (7:30) → verde.
   2. Al **salir** (16:00) → naranja.
@@ -96,9 +96,9 @@ El sistema alterna entrada/salida solo, así que basta con **acercar la tarjeta 
   vale: en ese caso se cuentan las horas exactas y no se resta nada extra. Da igual 2 o 4:
   el resultado sale bien.
 
-> La media hora de comida **no cuenta** como trabajada. En verano no se resta nada (jornada
-> seguida). El descanso solo se resta si es jornada larga; una media jornada (solo la mañana)
-> no pierde esos 30 min.
+> La media hora de comida **no cuenta** como trabajada. En **junio, julio y agosto** no se resta
+> nada (jornada seguida). El descanso solo se resta si es jornada larga; una media jornada (solo
+> la mañana) no pierde esos 30 min.
 
 ---
 
@@ -127,8 +127,8 @@ Engranaje ⚙️ → PIN (por defecto **1234**). Menú:
 ### Regla de comida por trabajador
 
 Al dar de alta o editar a un trabajador puedes fijar **su regla de comida**: *Estándar*
-(resta 30 min en invierno), *Restar siempre*, o *No restar*, y los minutos. Así el trabajador
-remoto (u otro) puede tener una regla distinta del resto.
+(resta 30 min **salvo junio, julio y agosto**), *Restar siempre* (todo el año), o *No restar*, y
+los minutos. Así el trabajador remoto (u otro) puede tener una regla distinta del resto.
 
 ---
 

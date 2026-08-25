@@ -71,6 +71,7 @@ input,select{font-size:16px;padding:8px;border:1px solid #bbb;border-radius:8px;
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0}
 .prev{width:160px;margin-top:8px;border-radius:10px}
 .mini{width:44px;height:44px;object-fit:cover;border-radius:10px;vertical-align:middle;margin-right:8px}
+.mini-ph{display:inline-flex;align-items:center;justify-content:center;background:#e6ece6;color:#7d8f83;font-size:24px}
 .wrow{padding:6px 0;border-bottom:1px solid #eee}
 .muted{color:#777}
 .msg{margin-top:10px;font-weight:700}
