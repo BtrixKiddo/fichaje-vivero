@@ -1,6 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
-const APP_VERSION = 'v19'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
+const APP_VERSION = 'v21'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -136,6 +136,12 @@ function computeDays(records, uid, rule) {
 }
 // Texto de estado del día (para Excel/PDF/pantalla).
 const estadoTxt = d => d.incompleto ? 'INCOMPLETO' : (d.descanso ? `OK (-${d.descanso / 60000} min comida)` : 'OK');
+// Compara las horas de una semana con las previstas del trabajador (mínimo).
+function estadoSemana(workedMs, targetH) {
+  if (!targetH) return '';
+  const faltan = targetH - msToH(workedMs);
+  return faltan <= 0.01 ? 'Cumple' : 'Faltan ' + (Math.round(faltan * 100) / 100) + ' h';
+}
 
 // Un fichaje es "a mano" si el admin lo añadió o corrigió (no salió del kiosco).
 const isManual = p => p.origen !== 'fichaje';
@@ -389,6 +395,8 @@ async function panelAlta() {
       </select>
       <input id="altaPausaMin" type="number" min="0" value="30" style="width:80px"> min
     </div>
+    <p>Horas previstas por semana (para avisar si llega al mínimo; deja 0 si no quieres control):</p>
+    <div class="row"><input id="altaHorasSem" type="number" min="0" step="0.5" value="0" style="width:90px"> h/semana</div>
     <div class="row"><button id="altaGuardar" class="btn primary">Guardar</button>
       <button id="altaLimpiar" class="btn">Nuevo / limpiar</button></div>
     <div id="altaMsg" class="msg"></div>
@@ -396,13 +404,14 @@ async function panelAlta() {
   altaFotoData = '';
   $('#altaLeer').onclick = () => captureUid(uid => { $('#altaUid').value = uid; });
   $('#altaFoto').onchange = async e => { if (e.target.files[0]) { altaFotoData = await fileToThumb(e.target.files[0]); showAltaPrev(altaFotoData); } };
-  $('#altaLimpiar').onclick = () => { $('#altaUid').value = ''; $('#altaNombre').value = ''; altaFotoData = ''; showAltaPrev(''); $('#altaPausaCuando').value = 'invierno'; $('#altaPausaMin').value = '30'; $('#altaMsg').textContent = ''; };
+  $('#altaLimpiar').onclick = () => { $('#altaUid').value = ''; $('#altaNombre').value = ''; altaFotoData = ''; showAltaPrev(''); $('#altaPausaCuando').value = 'invierno'; $('#altaPausaMin').value = '30'; $('#altaHorasSem').value = '0'; $('#altaMsg').textContent = ''; };
   $('#altaGuardar').onclick = async () => {
     const uid = normUid($('#altaUid').value.trim()), nombre = $('#altaNombre').value.trim();
     if (!uid || !nombre) { $('#altaMsg').textContent = 'Falta el UID o el nombre'; return; }
     const exists = await getWorker(uid);
     const pausa = { cuando: $('#altaPausaCuando').value, min: +$('#altaPausaMin').value || 0 };
-    await putWorker({ uid, nombre, foto: altaFotoData || (exists && exists.foto) || '', alta_ts: (exists && exists.alta_ts) || Date.now(), pausa });
+    const horasSemana = +$('#altaHorasSem').value || 0;
+    await putWorker({ uid, nombre, foto: altaFotoData || (exists && exists.foto) || '', alta_ts: (exists && exists.alta_ts) || Date.now(), pausa, horasSemana });
     $('#altaMsg').textContent = exists ? 'Trabajador actualizado ✓' : 'Trabajador dado de alta ✓';
     captureCb = null; renderAltaLista();
   };
@@ -425,6 +434,7 @@ async function editWorker(uid) {
   const r = ruleFor(w);
   $('#altaPausaCuando').value = r.cuando;
   $('#altaPausaMin').value = r.min;
+  $('#altaHorasSem').value = w.horasSemana || 0;
   $('#altaMsg').textContent = 'Editando a ' + w.nombre + ' — cambia lo que quieras y pulsa Guardar';
   $('#adminBody').scrollIntoView({ block: 'start' });
 }
@@ -544,10 +554,16 @@ async function renderHoursTable(container, from, to, onlyUid, group = 'dia') {
       const groups = {};
       for (const d of days) { const g = groups[keyFn(d.date)] || (groups[keyFn(d.date)] = { worked: 0, inc: 0, dias: 0 }); g.worked += d.worked; if (d.incompleto) g.inc++; g.dias++; }
       const keys = Object.keys(groups).sort();
-      html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>${group === 'semana' ? 'Semana' : 'Mes'}</th><th>Días</th><th>Horas</th></tr>`;
-      if (!keys.length) html += '<tr><td colspan="3" class="muted">Sin fichajes en el periodo</td></tr>';
-      for (const k of keys) { const g = groups[k]; tot += g.worked; html += `<tr class="${g.inc ? 'inc' : ''}"><td>${labelFn(k)}</td><td>${g.dias}${g.inc ? ` <span class="muted">(${g.inc} incompleto/s)</span>` : ''}</td><td>${fmtH(g.worked)}</td></tr>`; }
-      html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td></tr></table></div>`;
+      const target = group === 'semana' ? (+w.horasSemana || 0) : 0;
+      html += `<div class="wblock"><h3>${w.nombre}</h3><table class="grid"><tr><th>${group === 'semana' ? 'Semana' : 'Mes'}</th><th>Días</th><th>Horas</th>${target ? '<th>Previstas</th>' : ''}</tr>`;
+      if (!keys.length) html += `<tr><td colspan="${target ? 4 : 3}" class="muted">Sin fichajes en el periodo</td></tr>`;
+      for (const k of keys) {
+        const g = groups[k]; tot += g.worked;
+        const est = target ? estadoSemana(g.worked, target) : '';
+        const cumple = est === 'Cumple';
+        html += `<tr class="${g.inc ? 'inc' : ''}"><td>${labelFn(k)}</td><td>${g.dias}${g.inc ? ` <span class="muted">(${g.inc} incompleto/s)</span>` : ''}</td><td>${fmtH(g.worked)}</td>${target ? `<td>${target}h — <b style="color:${cumple ? '#1b8a3a' : '#c62828'}">${est}</b></td>` : ''}</tr>`;
+      }
+      html += `<tr class="tot"><td colspan="2">TOTAL</td><td>${fmtH(tot)}</td>${target ? '<td></td>' : ''}</tr></table></div>`;
     }
   }
   html += '<p class="leyenda">⚠ = día/periodo con algún fichaje incompleto &nbsp;·&nbsp; <b>*</b> = hora puesta por el administrador &nbsp;·&nbsp; se resta la comida (30 min) salvo jun–ago, si solo se ficha entrada y salida</p>';
@@ -668,11 +684,12 @@ async function exportXLSX() {
     resumen.push([w.nombre, '', '', 'TOTAL', numH(tot), '']);
   }
 
-  const semanas = [['Trabajador', 'Semana', 'Días', 'Horas']];
+  const semanas = [['Trabajador', 'Semana', 'Días', 'Horas', 'Previstas', 'Estado']];
   const meses = [['Trabajador', 'Mes', 'Días', 'Horas']];
   for (const w of workers) {
     const days = computeDays(recs, w.uid, ruleFor(w));
-    for (const g of groupTotals(days, 'semana')) semanas.push([w.nombre, g.label, g.dias, numH(g.worked)]);
+    const target = +w.horasSemana || 0;
+    for (const g of groupTotals(days, 'semana')) semanas.push([w.nombre, g.label, g.dias, numH(g.worked), target || '', estadoSemana(g.worked, target)]);
     for (const g of groupTotals(days, 'mes')) meses.push([w.nombre, g.label, g.dias, numH(g.worked)]);
   }
 
@@ -692,7 +709,10 @@ async function exportXLSX() {
     { name: 'Detalle', rows: detalle },
     { name: 'Correcciones', rows: corr },
   ]);
-  return shareOrDownload(`fichajes_${dayKey(Date.now())}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
+  // Nombre único por hora: así descargar 2 veces el mismo día NO deja abierto el archivo viejo.
+  const now = new Date();
+  const stamp = `${dayKey(now.getTime())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+  return shareOrDownload(`fichajes_${stamp}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
 }
 
 async function exportPDF() {
@@ -705,10 +725,10 @@ async function exportPDF() {
       <p>Control horario — art. 34.9 del Estatuto de los Trabajadores<br>
       Generado el ${new Date().toLocaleString('es-ES')}</p>
     </div>`;
-  const totalsTable = (title, arr, colName) => arr.length ? `
+  const totalsTable = (title, arr, colName, targetH = 0) => arr.length ? `
       <div class="subt">${title}</div>
-      <table><thead><tr><th>${colName}</th><th>Días</th><th>Horas</th></tr></thead><tbody>
-      ${arr.map(g => `<tr class="${g.inc ? 'inc' : ''}"><td>${g.label}</td><td>${g.dias}${g.inc ? ` (${g.inc} incompleto/s)` : ''}</td><td class="num">${fmtH(g.worked)}</td></tr>`).join('')}
+      <table><thead><tr><th>${colName}</th><th>Días</th><th>Horas</th>${targetH ? '<th>Previstas</th><th>Estado</th>' : ''}</tr></thead><tbody>
+      ${arr.map(g => `<tr class="${g.inc ? 'inc' : ''}"><td>${g.label}</td><td>${g.dias}${g.inc ? ` (${g.inc} incompleto/s)` : ''}</td><td class="num">${fmtH(g.worked)}</td>${targetH ? `<td class="num">${targetH} h</td><td>${estadoSemana(g.worked, targetH)}</td>` : ''}</tr>`).join('')}
       </tbody></table>` : '';
   for (const w of workers) {
     const days = computeDays(recs, w.uid, ruleFor(w));
@@ -726,7 +746,7 @@ async function exportPDF() {
         <tbody>${rows}</tbody>
         <tfoot><tr class="tot"><td colspan="3">TOTAL${incompletos ? ` · ${incompletos} día(s) incompleto(s)` : ''}</td><td class="num">${fmtH(tot)}</td><td></td></tr></tfoot>
       </table>
-      ${totalsTable('Totales por semana', groupTotals(days, 'semana'), 'Semana')}
+      ${totalsTable('Totales por semana', groupTotals(days, 'semana'), 'Semana', +w.horasSemana || 0)}
       ${totalsTable('Totales por mes', groupTotals(days, 'mes'), 'Mes')}`;
   }
   const corr = recs.filter(r => r.type === 'correccion');
