@@ -1,6 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
-const APP_VERSION = 'v21'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
+const APP_VERSION = 'v22'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -200,21 +200,18 @@ function download(name, mime, data) {
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
-// Abre el menú de compartir del móvil (Gmail, WhatsApp, guardar…). Si no se puede, descarga.
-// Devuelve un texto explicando qué pasó (para diagnóstico en pantalla).
-async function shareOrDownload(name, mime, data) {
-  let file = null;
-  try { file = new File([data], name, { type: mime }); } catch (_) {}
-  if (!navigator.share) { download(name, mime, data); return 'Descargado (este navegador no tiene compartir)'; }
-  if (file && navigator.canShare && !navigator.canShare({ files: [file] })) { download(name, mime, data); return 'Descargado (el móvil no permite compartir este archivo)'; }
-  try {
-    await navigator.share({ files: [file], title: name });
-    return 'Enviado / guardado ✓';
-  } catch (e) {
-    if (e && e.name === 'AbortError') return 'Cancelado';
-    download(name, mime, data);
-    return 'Descargado (compartir falló: ' + ((e && e.name) || '?') + ')';
-  }
+// Guarda el último Excel generado para poder ENVIARLO (compartir) después con un solo toque.
+// (Compartir justo tras generar falla en algunos Samsung con NotAllowedError. Con el archivo ya
+//  hecho, el toque de "Enviar" tiene activación fresca del usuario y el menú de compartir sí abre.)
+let lastExport = null;
+async function shareLast() {
+  if (!lastExport) return 'Primero pulsa “Exportar Excel”.';
+  const { name, mime, bytes } = lastExport;
+  let file;
+  try { file = new File([bytes], name, { type: mime }); } catch (_) { return 'Este móvil no permite compartir; el archivo está en Descargas.'; }
+  if (!navigator.share || (navigator.canShare && !navigator.canShare({ files: [file] }))) return 'Este móvil no permite compartir; ábrelo desde Descargas.';
+  try { await navigator.share({ files: [file] }); return 'Enviado ✓'; }
+  catch (e) { return (e && e.name === 'AbortError') ? 'Cancelado' : 'No se pudo abrir el menú de compartir; el archivo está en Descargas.'; }
 }
 const normUid = s => String(s || '').toLowerCase();
 function workerSelect(id, ws, sel) { return `<select id="${id}">${ws.map(w => `<option value="${w.uid}" ${w.uid === sel ? 'selected' : ''}>${w.nombre}</option>`).join('')}</select>`; }
@@ -712,7 +709,11 @@ async function exportXLSX() {
   // Nombre único por hora: así descargar 2 veces el mismo día NO deja abierto el archivo viejo.
   const now = new Date();
   const stamp = `${dayKey(now.getTime())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-  return shareOrDownload(`fichajes_${stamp}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes);
+  const name = `fichajes_${stamp}.xlsx`;
+  const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  download(name, mime, bytes);        // guardar SIEMPRE en Descargas (fiable en todos los móviles)
+  lastExport = { name, mime, bytes }; // recordarlo para el botón "Enviar"
+  return name;
 }
 
 async function exportPDF() {
@@ -763,17 +764,23 @@ async function exportPDF() {
 function panelExportar() {
   setPanel(`
     <h2>Exportar</h2>
-    <p>Al exportar se abre el menú del móvil para <b>enviar el archivo</b> (Gmail, WhatsApp…) o guardarlo. Si el aparato no lo permite, se descarga en <b>Descargas</b>.</p>
+    <p><b>Exportar Excel</b> guarda el archivo en <b>Descargas</b>. Después, con <b>Enviar</b>, lo mandas por WhatsApp o Gmail.</p>
     <p class="muted">El Excel trae una hoja por tabla: Resumen, Semanas, Meses, Detalle y Correcciones. Se abre bien en Excel y en Google Sheets.</p>
     <div class="row">
-      <button id="expXlsx" class="btn primary">Exportar Excel (.xlsx)</button>
+      <button id="expXlsx" class="btn primary">📥 Exportar Excel (.xlsx)</button>
+      <button id="expSend" class="btn" disabled>📤 Enviar</button></div>
+    <div class="row">
       <button id="expPdf" class="btn">Exportar PDF (imprimir → Guardar como PDF)</button></div>
     <div id="expMsg" class="msg"></div>
     <p class="muted" style="margin-top:14px">App ${APP_VERSION}</p>`);
   $('#expXlsx').onclick = async () => {
-    try { $('#expMsg').textContent = await exportXLSX(); }
-    catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; }
+    try {
+      const name = await exportXLSX();
+      $('#expMsg').textContent = 'Guardado en Descargas ✓  ' + name;
+      $('#expSend').disabled = false;
+    } catch (e) { $('#expMsg').textContent = 'Error al generar: ' + e.message; }
   };
+  $('#expSend').onclick = async () => { $('#expMsg').textContent = await shareLast(); };
   $('#expPdf').onclick = exportPDF;
 }
 

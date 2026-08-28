@@ -67,6 +67,7 @@ html,body{margin:0;height:100%;font-family:system-ui,Arial,sans-serif;background
 .btn{background:#1b8a3a;color:#fff;border:none;padding:10px 14px;border-radius:10px;font-size:16px}
 .btn.primary{background:#0b62d6}
 .btn.sm{padding:4px 8px;font-size:13px}
+.btn:disabled{opacity:.45}
 input,select{font-size:16px;padding:8px;border:1px solid #bbb;border-radius:8px;margin:4px 4px 4px 0}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0}
 .prev{width:160px;margin-top:8px;border-radius:10px}
