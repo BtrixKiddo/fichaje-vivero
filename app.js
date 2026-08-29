@@ -1,6 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
-const APP_VERSION = 'v22'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
+const APP_VERSION = 'v23'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -224,6 +224,38 @@ async function fileToThumb(file) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   c.getContext('2d').drawImage(img, 0, 0, w, h);
   return c.toDataURL('image/jpeg', 0.8);
+}
+
+// Cuadro de diálogo PROPIO (sin prompt/alert/confirm nativos, que además Android bloquea en PWA).
+// fields: [{name, label, type, value, placeholder, inputmode}]. Devuelve los valores, o null si se cancela.
+// validate(values) -> texto de error (se muestra y NO cierra) o null/undefined (ok).
+function formModal({ title, fields = [], okText = 'Guardar', validate }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-ov';
+    ov.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3>${escXml(title)}</h3>
+        ${fields.map(f => `<label class="modal-f">${escXml(f.label)}
+          <input name="${f.name}" type="${f.type || 'text'}" value="${f.value != null ? escXml(f.value) : ''}"
+            ${f.inputmode ? `inputmode="${f.inputmode}"` : ''} ${f.placeholder ? `placeholder="${escXml(f.placeholder)}"` : ''}></label>`).join('')}
+        <div class="modal-err"></div>
+        <div class="modal-btns"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-ok>${escXml(okText)}</button></div>
+      </div>`;
+    document.body.appendChild(ov);
+    const inputs = [...ov.querySelectorAll('input')], errEl = ov.querySelector('.modal-err');
+    const close = val => { ov.remove(); resolve(val); };
+    const submit = () => {
+      const values = {}; inputs.forEach(i => values[i.name] = i.value);
+      const e = validate && validate(values);
+      if (e) { errEl.textContent = e; return; }
+      close(values);
+    };
+    ov.querySelector('[data-ok]').onclick = submit;
+    ov.querySelector('[data-x]').onclick = () => close(null);
+    ov.onclick = e => { if (e.target === ov) close(null); };   // tocar fuera = cancelar
+    inputs[0] && inputs[0].focus();
+  });
 }
 
 /* ============================ KIOSCO ============================ */
@@ -486,18 +518,44 @@ async function renderCorrDay() {
   $('#corrDay').querySelectorAll('[data-anular]').forEach(b => b.onclick = () => corrOp('anular', +b.dataset.anular));
   $('#corrDay').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => corrOp('modificar', +b.dataset.mod));
 }
-// ponytail: prompt() basta para el admin (sabe leer); cambiar a modal propio si algún Chrome lo bloquea.
 async function corrOp(op, seq) {
   const uid = $('#corrW').value, date = $('#corrD').value;
-  let extra = {};
-  if (op === 'modificar') {
-    const nueva = prompt('Nueva hora (HH:MM):'); if (!nueva) return;
-    const ts = new Date(`${date}T${nueva}`).getTime();
-    if (isNaN(ts)) return alert('Hora no válida');
-    extra = { tsCorregido: ts };
+  if (op === 'anular') {
+    const v = await formModal({
+      title: 'Anular fichaje', okText: 'Anular',
+      fields: [{ name: 'motivo', label: 'Motivo', placeholder: 'Por qué se anula (obligatorio)' }],
+      validate: v => v.motivo.trim() ? null : 'El motivo es obligatorio',
+    });
+    if (!v) return;
+    await appendRecord({ type: 'correccion', op: 'anular', uid, targetSeq: seq, motivo: v.motivo.trim(), ts: Date.now() });
+    return renderCorrDay();
   }
-  const mot = prompt(op === 'anular' ? 'Motivo para anular:' : 'Motivo del cambio:'); if (!mot) return;
-  await appendRecord({ type: 'correccion', op, uid, targetSeq: seq, motivo: mot, ts: Date.now(), ...extra });
+  // Cambiar hora: pide hora (selector nativo, ya rellena) + motivo juntos, y valida la secuencia del día.
+  const dia = effectivePunches(await getAllRecords(), uid).filter(p => dayKey(p.ts) === date);
+  const actual = dia.find(p => p.seq === seq);
+  if (!actual) return;
+  const v = await formModal({
+    title: `Cambiar hora (${actual.tipo === 'entrada' ? 'ENTRADA' : 'SALIDA'})`, okText: 'Guardar',
+    fields: [
+      { name: 'hora', label: 'Nueva hora', type: 'time', value: hhmm(actual.ts) },
+      { name: 'motivo', label: 'Motivo', placeholder: 'Por qué se cambia (obligatorio)' },
+    ],
+    validate: v => {
+      if (!v.hora) return 'Pon la hora';
+      if (!v.motivo.trim()) return 'El motivo es obligatorio';
+      const ts = new Date(`${date}T${v.hora}`).getTime();
+      if (isNaN(ts)) return 'Hora no válida';
+      // El día debe seguir alternando entrada→salida: una entrada no puede quedar tras su salida.
+      if (!secuenciaValida(dia.filter(p => p.seq !== seq), actual.tipo, ts))
+        return actual.tipo === 'entrada'
+          ? 'La entrada no puede ir después de su salida. Revisa la hora.'
+          : 'La salida no puede ir antes de su entrada. Revisa la hora.';
+      return null;
+    },
+  });
+  if (!v) return;
+  const ts = new Date(`${date}T${v.hora}`).getTime();
+  await appendRecord({ type: 'correccion', op: 'modificar', uid, targetSeq: seq, tsCorregido: ts, motivo: v.motivo.trim(), ts: Date.now() });
   renderCorrDay();
 }
 
@@ -850,9 +908,13 @@ async function panelPin() {
     $('#pinMsg').textContent = 'PIN cambiado ✓';
   };
   $('#resetBtn').onclick = async () => {
-    const pin = prompt('Para BORRAR todos los datos, introduce el PIN de administrador:');
-    if (pin === null) return;
-    if (!(await checkPin(pin))) return $('#resetMsg').textContent = 'PIN incorrecto. No se borró nada.';
+    const v = await formModal({
+      title: 'Borrar TODOS los datos', okText: 'Borrar',
+      fields: [{ name: 'pin', label: 'Escribe el PIN de administrador para confirmar', type: 'password', inputmode: 'numeric', placeholder: 'PIN' }],
+      validate: v => v.pin ? null : 'Escribe el PIN',
+    });
+    if (!v) return;
+    if (!(await checkPin(v.pin))) return $('#resetMsg').textContent = 'PIN incorrecto. No se borró nada.';
     await resetAllData();
     $('#resetMsg').textContent = 'Datos borrados. Todo a cero ✓';
   };
