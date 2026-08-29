@@ -1,6 +1,6 @@
 'use strict';
 /* Fichaje Vivero — todo offline, todo en el dispositivo. Sin servidores. */
-const APP_VERSION = 'v23'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
+const APP_VERSION = 'v24'; // se muestra en Ajustes/Exportar para saber qué versión tiene el móvil
 
 /* ============================ IndexedDB ============================ */
 const dbp = new Promise((res, rej) => {
@@ -509,14 +509,15 @@ async function panelCorreccion(preUid, preDate) {
 async function renderCorrDay() {
   const uid = $('#corrW').value, date = $('#corrD').value;
   const list = effectivePunches(await getAllRecords(), uid).filter(p => dayKey(p.ts) === date);
-  $('#corrDay').innerHTML = list.length ? list.map(p => `
+  // data-i = índice en la lista: así conservamos el seq REAL (número del kiosco o 'c..' de un añadido).
+  $('#corrDay').innerHTML = list.length ? list.map((p, i) => `
     <div class="prow ${p.tipo}">
       <b>${p.tipo === 'entrada' ? 'ENTRADA' : 'SALIDA'}</b> ${hhmm(p.ts)} <span class="muted">(${p.origen})</span>
-      ${typeof p.seq === 'number' ? `<button class="btn sm" data-anular="${p.seq}">Anular</button>
-      <button class="btn sm" data-mod="${p.seq}">Cambiar hora</button>` : ''}
+      <button class="btn sm" data-anular="${i}">Anular</button>
+      <button class="btn sm" data-mod="${i}">Cambiar hora</button>
     </div>`).join('') : '<p class="muted">Sin fichajes ese día.</p>';
-  $('#corrDay').querySelectorAll('[data-anular]').forEach(b => b.onclick = () => corrOp('anular', +b.dataset.anular));
-  $('#corrDay').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => corrOp('modificar', +b.dataset.mod));
+  $('#corrDay').querySelectorAll('[data-anular]').forEach(b => b.onclick = () => corrOp('anular', list[+b.dataset.anular].seq));
+  $('#corrDay').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => corrOp('modificar', list[+b.dataset.mod].seq));
 }
 async function corrOp(op, seq) {
   const uid = $('#corrW').value, date = $('#corrD').value;
